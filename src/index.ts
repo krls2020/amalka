@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { resolve, sep } from "node:path";
 import { log } from "./lib/redact.ts";
-import { cache, cacheIncrFloat } from "./storage.ts";
+import { cache } from "./storage.ts";
+import { getDailyUsd } from "./lib/ratelimit.ts";
 import sessionRoutes from "./routes/session.ts";
 import imageRoutes from "./routes/image.ts";
 
@@ -71,15 +73,20 @@ app.get("/api/debug/usage", async (c) => {
     return c.json({ ok: false }, 401);
   }
   const today = new Date().toISOString().slice(0, 10);
-  const usd = await cacheIncrFloat(`usage:${today}`, 0);
+  const usd = await getDailyUsd();
   return c.json({ ok: true, date: today, usd });
 });
 
-const PUBLIC_DIR = "./public";
+const PUBLIC_DIR = resolve("./public");
 
 async function tryServeStatic(path: string): Promise<Response | null> {
-  const safe = path.replace(/\.\.+/g, "").replace(/^\/+/, "");
-  const file = Bun.file(`${PUBLIC_DIR}/${safe || "index.html"}`);
+  const cleaned = path.replace(/^\/+/, "") || "index.html";
+  const target = resolve(PUBLIC_DIR, cleaned);
+  // Reject anything resolving outside PUBLIC_DIR (defense against ../ tricks).
+  if (target !== PUBLIC_DIR && !target.startsWith(PUBLIC_DIR + sep)) {
+    return null;
+  }
+  const file = Bun.file(target);
   if (await file.exists()) {
     return new Response(file);
   }

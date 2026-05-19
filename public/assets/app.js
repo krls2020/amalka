@@ -18,6 +18,10 @@ let sessionId = null;
 let nonce = null;
 let isPaused = false;
 let activeImageTimer = null;
+let greetingStarted = false;
+let micUnlocked = false;
+let sessionExpiryTimer = null;
+let cumulativeUsage = null;
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -54,10 +58,48 @@ imgOverlay.addEventListener("click", (e) => {
   hideImage();
 });
 
-setInterval(() => {
-  head.classList.add("blinking");
-  setTimeout(() => head.classList.remove("blinking"), 130);
-}, 3500 + Math.random() * 2500);
+function scheduleBlink() {
+  setTimeout(() => {
+    head.classList.add("blinking");
+    setTimeout(() => head.classList.remove("blinking"), 130);
+    scheduleBlink();
+  }, 3500 + Math.random() * 2500);
+}
+scheduleBlink();
+
+function disconnect(reason) {
+  if (reason) console.log("[Amálka] disconnect:", reason);
+  clearTimeout(sessionExpiryTimer);
+  sessionExpiryTimer = null;
+  cancelAnimationFrame(rafId);
+  rafId = null;
+  if (dataCh) {
+    try { dataCh.close(); } catch {}
+    dataCh = null;
+  }
+  if (pc) {
+    try { pc.close(); } catch {}
+    pc = null;
+  }
+  if (mediaStream) {
+    for (const t of mediaStream.getTracks()) {
+      try { t.stop(); } catch {}
+    }
+    mediaStream = null;
+  }
+  if (audioCtx) {
+    try { audioCtx.close(); } catch {}
+    audioCtx = null;
+  }
+  analyser = null;
+  smoothed = 0;
+  isPaused = false;
+  greetingStarted = false;
+  micUnlocked = false;
+  // Flush final usage if we have any.
+  sendUsageBeacon();
+  setState("off");
+}
 
 async function connect() {
   setState("loading");
@@ -80,6 +122,7 @@ async function connect() {
     token = await r.json();
     sessionId = token.sessionId;
     nonce = token.nonce;
+    cumulativeUsage = null;
   } catch (e) {
     setStatus("nepodařilo se spojit");
     setState("off");
@@ -87,7 +130,13 @@ async function connect() {
   }
 
   try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
   } catch (e) {
     setStatus("povol mikrofon, prosím");
     setState("off");
@@ -96,8 +145,11 @@ async function connect() {
 
   pc = new RTCPeerConnection();
   for (const track of mediaStream.getAudioTracks()) {
+    track.enabled = false;
     pc.addTrack(track, mediaStream);
   }
+  micUnlocked = false;
+  greetingStarted = false;
 
   const audioEl = $("amalkaAudio");
   pc.ontrack = (e) => {
@@ -106,13 +158,33 @@ async function connect() {
   };
 
   dataCh = pc.createDataChannel("oai-events");
-  dataCh.onopen = () => setStatus("povídej!");
-  dataCh.onmessage = (ev) => handleEvent(JSON.parse(ev.data));
+  dataCh.onopen = () => {
+    setStatus("amálka začíná…");
+    try {
+      dataCh.send(
+        JSON.stringify({
+          type: "response.create",
+          response: {
+            instructions:
+              "Pozdrav Anežku přesně touto větou a nic jiného nepřidávej: 'Ahoj Anežko, tady Amálka! O čem si dneska budeme povídat?' Pak počkej na její odpověď.",
+          },
+        }),
+      );
+    } catch (e) {
+      console.warn("initial response.create failed", e);
+    }
+  };
+  dataCh.onmessage = (ev) => {
+    try { handleEvent(JSON.parse(ev.data)); }
+    catch (e) { console.warn("event parse failed", e); }
+  };
 
   pc.oniceconnectionstatechange = () => {
-    if (pc.iceConnectionState === "failed") {
-      setStatus("ztratila jsem signál");
-      setState("off");
+    if (!pc) return;
+    const s = pc.iceConnectionState;
+    if (s === "failed" || s === "closed" || s === "disconnected") {
+      setStatus("ztratila jsem signál, klikni znovu");
+      disconnect(`ice=${s}`);
     }
   };
 
@@ -133,12 +205,21 @@ async function connect() {
     const t = await sdpRes.text();
     console.error("SDP exchange failed", sdpRes.status, t);
     setStatus("amálka se neozvala");
-    setState("off");
+    disconnect("sdp_failed");
     return;
   }
   const answer = { type: "answer", sdp: await sdpRes.text() };
   await pc.setRemoteDescription(answer);
   setState("on");
+
+  // Watchdog: client secret expires after 600s on OpenAI side. Tear down
+  // gracefully ~30s before, so the child doesn't experience a hard cutoff.
+  const maxMin = Number(token.maxSessionMinutes ?? 30);
+  const expiryMs = Math.min(maxMin * 60_000, 9 * 60_000 + 30_000);
+  sessionExpiryTimer = setTimeout(() => {
+    setStatus("amálka si odpočine, klikni znovu");
+    disconnect("expiry");
+  }, expiryMs);
 }
 
 function setupAnalyser(stream) {
@@ -154,6 +235,7 @@ function setupAnalyser(stream) {
   const buf = new Uint8Array(analyser.frequencyBinCount);
   cancelAnimationFrame(rafId);
   function tick() {
+    if (!analyser) return;
     analyser.getByteTimeDomainData(buf);
     let sum = 0;
     for (let i = 0; i < buf.length; i++) {
@@ -171,12 +253,22 @@ function setupAnalyser(stream) {
   rafId = requestAnimationFrame(tick);
 }
 
-const handledCalls = new Set();
+// Bounded LRU of tool-call IDs to avoid unbounded growth in long sessions.
+const handledCalls = new Map();
+const HANDLED_CALLS_MAX = 200;
+function markHandled(callId) {
+  if (handledCalls.has(callId)) return false;
+  handledCalls.set(callId, Date.now());
+  if (handledCalls.size > HANDLED_CALLS_MAX) {
+    const oldest = handledCalls.keys().next().value;
+    handledCalls.delete(oldest);
+  }
+  return true;
+}
 
 function handleToolCall(call) {
   const callId = call.call_id;
-  if (!callId || handledCalls.has(callId)) return;
-  handledCalls.add(callId);
+  if (!callId || !markHandled(callId)) return;
 
   if (call.name !== "nakresli_obrazek") {
     sendToolAck(callId, { success: false, message: "Neznámý nástroj." });
@@ -191,7 +283,7 @@ function handleToolCall(call) {
   sendToolAck(callId, {
     success: true,
     message:
-      "Obrázek se mi kreslí na pozadí — Anežce se zobrazí sám za chvilku. Ty pokračuj v povídání, ne v popisu toho co kreslíš.",
+      "Obrázek se kreslí, zobrazí se sám. Pokračuj v povídání bez popisu kreslení.",
   });
 
   showImagePlaceholder();
@@ -235,6 +327,68 @@ function sendToolAck(callId, output) {
   dataCh.send(JSON.stringify({ type: "response.create" }));
 }
 
+function unlockMic() {
+  if (micUnlocked) return;
+  micUnlocked = true;
+  if (!mediaStream) return;
+  for (const t of mediaStream.getAudioTracks()) t.enabled = !isPaused;
+  console.log("[Amálka] mic unlocked");
+}
+
+function accumulateUsage(usage) {
+  if (!usage || typeof usage !== "object") return;
+  if (!cumulativeUsage) {
+    cumulativeUsage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      input_token_details: { text_tokens: 0, audio_tokens: 0, cached_tokens: 0 },
+      output_token_details: { text_tokens: 0, audio_tokens: 0 },
+    };
+  }
+  cumulativeUsage.input_tokens += Number(usage.input_tokens ?? 0) || 0;
+  cumulativeUsage.output_tokens += Number(usage.output_tokens ?? 0) || 0;
+  const ind = usage.input_token_details ?? {};
+  const outd = usage.output_token_details ?? {};
+  cumulativeUsage.input_token_details.text_tokens += Number(ind.text_tokens ?? 0) || 0;
+  cumulativeUsage.input_token_details.audio_tokens += Number(ind.audio_tokens ?? 0) || 0;
+  cumulativeUsage.input_token_details.cached_tokens += Number(ind.cached_tokens ?? 0) || 0;
+  cumulativeUsage.output_token_details.text_tokens += Number(outd.text_tokens ?? 0) || 0;
+  cumulativeUsage.output_token_details.audio_tokens += Number(outd.audio_tokens ?? 0) || 0;
+}
+
+function reportUsage(usage) {
+  if (!usage) return;
+  // Per-turn usage event from OpenAI response.done — bill it immediately so
+  // mid-session budget enforcement can fire.
+  fetch("/api/session/usage", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, ...usage }),
+  })
+    .then((r) => r.json())
+    .then((out) => {
+      if (out && out.overBudget) {
+        setStatus("amálka má dnes hotovo, zkus zítra");
+        disconnect("over_budget");
+      }
+    })
+    .catch((e) => console.warn("usage report failed", e));
+}
+
+function sendUsageBeacon() {
+  if (!sessionId || !cumulativeUsage) return;
+  try {
+    navigator.sendBeacon(
+      "/api/session/end",
+      new Blob(
+        [JSON.stringify({ sessionId, ...cumulativeUsage })],
+        { type: "application/json" },
+      ),
+    );
+  } catch {}
+  cumulativeUsage = null;
+}
+
 function handleEvent(ev) {
   if (ev.type === "input_audio_buffer.speech_started") {
     setStatus("poslouchám tě");
@@ -244,6 +398,10 @@ function handleEvent(ev) {
     ev.type === "response.audio.delta" ||
     ev.type === "response.output_audio.delta"
   ) {
+    if (!greetingStarted) {
+      greetingStarted = true;
+      setTimeout(unlockMic, 600);
+    }
     setStatus("mluvím");
   } else if (ev.type === "response.function_call_arguments.done") {
     handleToolCall({
@@ -256,6 +414,11 @@ function handleEvent(ev) {
     ev.type === "response.completed"
   ) {
     setStatus("povídej!");
+    const usage = ev.response?.usage ?? ev.usage;
+    if (usage) {
+      accumulateUsage(usage);
+      reportUsage(usage);
+    }
   } else if (ev.type === "error") {
     console.error("Realtime error", ev);
     setStatus("něco se pokazilo");
@@ -288,12 +451,10 @@ micBtn.addEventListener("touchend", (e) => {
 console.log("[Amálka] app.js loaded, mic listener attached", !!micBtn);
 
 window.addEventListener("beforeunload", () => {
-  if (sessionId) {
-    try {
-      navigator.sendBeacon(
-        "/api/session/end",
-        new Blob([JSON.stringify({ sessionId })], { type: "application/json" }),
-      );
-    } catch {}
-  }
+  sendUsageBeacon();
+});
+
+// Page-hide is more reliable than beforeunload on mobile.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") sendUsageBeacon();
 });

@@ -1,6 +1,10 @@
 import { Hono } from "hono";
 import { issueClientSecret } from "../openai.ts";
-import { rateLimit, dailyBudgetCheck } from "../lib/ratelimit.ts";
+import {
+  rateLimit,
+  dailyBudgetCheck,
+  recordUsageUsd,
+} from "../lib/ratelimit.ts";
 import { issueNonce } from "../lib/nonces.ts";
 import { log } from "../lib/redact.ts";
 
@@ -54,13 +58,81 @@ r.post("/api/realtime/session", async (c) => {
   }
 });
 
+// Realtime pricing per 1M tokens (USD). Override via env if OpenAI changes rates.
+// Defaults track gpt-realtime public pricing as of 2026-05.
+const PRICE_PER_M = {
+  inText: Number(process.env.PRICE_REALTIME_IN_TEXT ?? "4"),
+  outText: Number(process.env.PRICE_REALTIME_OUT_TEXT ?? "16"),
+  inAudio: Number(process.env.PRICE_REALTIME_IN_AUDIO ?? "32"),
+  outAudio: Number(process.env.PRICE_REALTIME_OUT_AUDIO ?? "64"),
+  cachedIn: Number(process.env.PRICE_REALTIME_CACHED_IN ?? "0.4"),
+};
+
+type UsageDetails = {
+  text_tokens?: number;
+  audio_tokens?: number;
+};
+type UsageBody = {
+  sessionId?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  input_token_details?: UsageDetails & { cached_tokens?: number };
+  output_token_details?: UsageDetails;
+};
+
+function usdFromUsage(u: UsageBody): number {
+  const inDet = u.input_token_details ?? {};
+  const outDet = u.output_token_details ?? {};
+  const cachedIn = Math.max(0, Number(inDet.cached_tokens ?? 0));
+  const inText = Math.max(0, Number(inDet.text_tokens ?? 0));
+  const inAudio = Math.max(0, Number(inDet.audio_tokens ?? 0));
+  const outText = Math.max(0, Number(outDet.text_tokens ?? 0));
+  const outAudio = Math.max(0, Number(outDet.audio_tokens ?? 0));
+  // Cached tokens replace text-input for the cached portion at a lower rate.
+  const uncachedInText = Math.max(0, inText - cachedIn);
+  const usd =
+    (uncachedInText * PRICE_PER_M.inText +
+      cachedIn * PRICE_PER_M.cachedIn +
+      inAudio * PRICE_PER_M.inAudio +
+      outText * PRICE_PER_M.outText +
+      outAudio * PRICE_PER_M.outAudio) /
+    1_000_000;
+  return Number.isFinite(usd) ? usd : 0;
+}
+
+// Hard ceiling per-call to prevent a malicious client from inflating the meter.
+// Even a worst-case 1-min Realtime turn at full volume is well under $1.
+const USAGE_CALL_CEILING_USD = 1.0;
+
+r.post("/api/session/usage", async (c) => {
+  let body: UsageBody = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ ok: false, reason: "bad_request" }, 400);
+  }
+  const usd = Math.min(USAGE_CALL_CEILING_USD, usdFromUsage(body));
+  if (usd <= 0) return c.json({ ok: true, usd: 0 });
+  const total = await recordUsageUsd(usd);
+  const budget = await dailyBudgetCheck();
+  return c.json({
+    ok: true,
+    usd,
+    total,
+    overBudget: !budget.allowed,
+    cap: budget.cap,
+  });
+});
+
 r.post("/api/session/end", async (c) => {
-  let body: { sessionId?: string; usageUsd?: number } = {};
+  let body: UsageBody = {};
   try {
     body = await c.req.json();
   } catch {}
   if (body.sessionId) {
-    log.info(`session end sessionId=${body.sessionId} usd=${body.usageUsd ?? 0}`);
+    const finalUsd = Math.min(USAGE_CALL_CEILING_USD, usdFromUsage(body));
+    if (finalUsd > 0) await recordUsageUsd(finalUsd);
+    log.info(`session end sessionId=${body.sessionId} finalUsd=${finalUsd.toFixed(4)}`);
   }
   return c.json({ ok: true });
 });

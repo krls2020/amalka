@@ -10,20 +10,30 @@ if (!OPENAI_KEY) {
 
 async function openaiFetch(
   path: string,
-  init: RequestInit & { retries?: number } = {},
+  init: RequestInit & { retries?: number; timeoutMs?: number } = {},
 ): Promise<Response> {
   const retries = init.retries ?? 2;
+  const timeoutMs = init.timeoutMs ?? 15_000;
+  const { retries: _r, timeoutMs: _t, signal: userSignal, ...rest } = init;
   let lastErr: unknown;
   for (let attempt = 0; attempt <= retries; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(new Error("timeout")), timeoutMs);
+    if (userSignal) {
+      if (userSignal.aborted) ctrl.abort(userSignal.reason);
+      else userSignal.addEventListener("abort", () => ctrl.abort(userSignal.reason), { once: true });
+    }
     try {
       const res = await fetch(`${BASE}${path}`, {
-        ...init,
+        ...rest,
+        signal: ctrl.signal,
         headers: {
           Authorization: `Bearer ${OPENAI_KEY}`,
           "Content-Type": "application/json",
           ...(init.headers ?? {}),
         },
       });
+      clearTimeout(timer);
       if (res.ok) return res;
       if (res.status >= 500 || res.status === 429) {
         const wait = 500 * Math.pow(2, attempt);
@@ -35,6 +45,7 @@ async function openaiFetch(
       log.error(`OpenAI ${path} non-retryable`, { status: res.status, body });
       throw new Error(`OpenAI ${res.status}`);
     } catch (e) {
+      clearTimeout(timer);
       lastErr = e;
       log.warn(`OpenAI ${path} fetch error attempt=${attempt}`, String(e));
     }
@@ -70,6 +81,7 @@ export async function generateImage(prompt: string): Promise<Uint8Array> {
       quality: "low",
     }),
     retries: 1,
+    timeoutMs: 60_000,
   });
   const data = (await res.json()) as { data: Array<{ b64_json: string }> };
   const b64 = data.data?.[0]?.b64_json;

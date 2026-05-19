@@ -76,7 +76,8 @@ r.post("/api/image/generate", async (c) => {
     return c.json({ ok: false, reason: "storage_failed" }, 500);
   }
 
-  await cacheSet(cacheKey, objectName);
+  // 60 days — long enough for repeated story themes, short enough to bound S3 growth.
+  await cacheSet(cacheKey, objectName, 60 * 60 * 24 * 60);
   await recordUsageUsd(0.011);
 
   return c.json({

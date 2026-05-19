@@ -7,6 +7,10 @@ export type RateLimitResult = {
   resetSeconds: number;
 };
 
+// Buckets that must fail CLOSED when cache is unreachable — they gate spend.
+// `session` may stay permissive (UX), but `image` and nonce checks must not.
+const FAIL_CLOSED_BUCKETS = new Set(["image"]);
+
 export async function rateLimit(
   bucket: string,
   identifier: string,
@@ -14,7 +18,8 @@ export async function rateLimit(
   windowSeconds: number,
 ): Promise<RateLimitResult> {
   if (!cache) {
-    return { allowed: true, remaining: capacity, resetSeconds: windowSeconds };
+    const allowed = !FAIL_CLOSED_BUCKETS.has(bucket);
+    return { allowed, remaining: 0, resetSeconds: windowSeconds };
   }
   const key = `rl:${bucket}:${identifier}`;
   try {
@@ -32,7 +37,20 @@ export async function rateLimit(
     };
   } catch (e) {
     log.warn(`rateLimit ${bucket} failed`, String(e));
-    return { allowed: true, remaining: capacity, resetSeconds: windowSeconds };
+    const allowed = !FAIL_CLOSED_BUCKETS.has(bucket);
+    return { allowed, remaining: 0, resetSeconds: windowSeconds };
+  }
+}
+
+export async function getDailyUsd(): Promise<number> {
+  if (!cache) return 0;
+  const today = new Date().toISOString().slice(0, 10);
+  try {
+    const raw = await cache.send("GET", [`usage:${today}`]);
+    return raw ? parseFloat(String(raw)) : 0;
+  } catch (e) {
+    log.warn("getDailyUsd failed", String(e));
+    return 0;
   }
 }
 
@@ -42,31 +60,24 @@ export async function dailyBudgetCheck(): Promise<{
   cap: number;
 }> {
   const cap = parseFloat(process.env.DAILY_USD_BUDGET ?? "5");
-  if (!cache) return { allowed: true, usd: 0, cap };
-  const today = new Date().toISOString().slice(0, 10);
-  try {
-    const raw = await cache.send("GET", [`usage:${today}`]);
-    const usd = raw ? parseFloat(String(raw)) : 0;
-    return { allowed: usd < cap, usd, cap };
-  } catch (e) {
-    log.warn("dailyBudgetCheck failed", String(e));
-    return { allowed: true, usd: 0, cap };
-  }
+  // Fail closed: if cache is down we can't track spend, so don't issue new sessions.
+  if (!cache) return { allowed: false, usd: 0, cap };
+  const usd = await getDailyUsd();
+  return { allowed: usd < cap, usd, cap };
 }
 
-export async function recordUsageUsd(delta: number): Promise<void> {
-  if (!cache) return;
+export async function recordUsageUsd(delta: number): Promise<number> {
+  if (!cache || delta <= 0) return 0;
   const today = new Date().toISOString().slice(0, 10);
+  const key = `usage:${today}`;
   try {
-    const cur = (await cache.send("GET", [`usage:${today}`])) as string | null;
-    const next = (cur ? parseFloat(cur) : 0) + delta;
-    await cache.send("SET", [
-      `usage:${today}`,
-      next.toFixed(6),
-      "EX",
-      String(60 * 60 * 26),
-    ]);
+    const raw = await cache.send("INCRBYFLOAT", [key, delta.toFixed(6)]);
+    const next = typeof raw === "number" ? raw : parseFloat(String(raw));
+    // Refresh TTL each write — Valkey doesn't auto-set on INCRBYFLOAT.
+    await cache.send("EXPIRE", [key, String(60 * 60 * 26)]);
+    return Number.isFinite(next) ? next : 0;
   } catch (e) {
     log.warn("recordUsageUsd failed", String(e));
+    return 0;
   }
 }
