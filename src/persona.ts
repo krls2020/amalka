@@ -58,19 +58,58 @@ export const TOOLS = [
   },
 ];
 
+function num(key: string, fallback: number): number {
+  const v = Number(process.env[key]);
+  return Number.isFinite(v) ? v : fallback;
+}
+
+function buildTurnDetection() {
+  const mode = (process.env.VAD_TYPE || "server_vad").trim();
+  if (mode === "semantic_vad") {
+    return {
+      type: "semantic_vad" as const,
+      eagerness: (process.env.VAD_EAGERNESS || "auto").trim(),
+      create_response: true,
+      interrupt_response: true,
+    };
+  }
+  return {
+    type: "server_vad" as const,
+    threshold: num("VAD_THRESHOLD", 0.3),
+    prefix_padding_ms: num("VAD_PREFIX_PADDING_MS", 500),
+    silence_duration_ms: num("VAD_SILENCE_DURATION_MS", 900),
+    idle_timeout_ms: num("VAD_IDLE_TIMEOUT_MS", 15000),
+    create_response: true,
+    interrupt_response: true,
+  };
+}
+
+function buildNoiseReduction() {
+  const v = (process.env.VAD_NOISE_REDUCTION || "far_field").trim();
+  if (v === "none" || v === "off") return undefined;
+  return { type: v };
+}
+
+function buildTranscription() {
+  const model = (process.env.TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe").trim();
+  if (model === "off" || model === "none") return undefined;
+  return { model, language: (process.env.TRANSCRIPTION_LANG || "cs").trim() };
+}
+
 export function buildSessionConfig() {
+  const input: Record<string, unknown> = {
+    turn_detection: buildTurnDetection(),
+  };
+  const nr = buildNoiseReduction();
+  if (nr) input.noise_reduction = nr;
+  const tr = buildTranscription();
+  if (tr) input.transcription = tr;
+
   return {
     type: "realtime" as const,
     model: "gpt-realtime",
     audio: {
-      input: {
-        turn_detection: {
-          type: "semantic_vad",
-          eagerness: "low",
-          create_response: true,
-          interrupt_response: true,
-        },
-      },
+      input,
       output: { voice: AMALKA_VOICE },
     },
     instructions: AMALKA_INSTRUCTIONS,

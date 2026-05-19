@@ -3,6 +3,7 @@ const amalkaEl = document.querySelector(".amalka");
 const head = $("head");
 const mouth = $("mouth");
 const micBtn = $("mic");
+const ringEl = document.querySelector(".ring");
 const statusEl = $("status");
 const imgOverlay = $("imgOverlay");
 const storyImg = $("storyImg");
@@ -11,9 +12,14 @@ let pc = null;
 let dataCh = null;
 let mediaStream = null;
 let audioCtx = null;
-let analyser = null;
+let outAnalyser = null;
+let inAnalyser = null;
 let rafId = null;
+let inRafId = null;
 let smoothed = 0;
+let inSmoothed = 0;
+let inPeak = 0;
+let inSpeakingSince = 0;
 let sessionId = null;
 let nonce = null;
 let isPaused = false;
@@ -22,6 +28,7 @@ let greetingStarted = false;
 let micUnlocked = false;
 let sessionExpiryTimer = null;
 let cumulativeUsage = null;
+let lastSpeechStartedAt = 0;
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -72,7 +79,9 @@ function disconnect(reason) {
   clearTimeout(sessionExpiryTimer);
   sessionExpiryTimer = null;
   cancelAnimationFrame(rafId);
+  cancelAnimationFrame(inRafId);
   rafId = null;
+  inRafId = null;
   if (dataCh) {
     try { dataCh.close(); } catch {}
     dataCh = null;
@@ -91,11 +100,17 @@ function disconnect(reason) {
     try { audioCtx.close(); } catch {}
     audioCtx = null;
   }
-  analyser = null;
+  outAnalyser = null;
+  inAnalyser = null;
   smoothed = 0;
+  inSmoothed = 0;
+  inPeak = 0;
+  inSpeakingSince = 0;
   isPaused = false;
   greetingStarted = false;
   micUnlocked = false;
+  ringEl?.classList.remove("listening");
+  if (ringEl) ringEl.style.removeProperty("--lvl");
   // Flush final usage if we have any.
   sendUsageBeacon();
   setState("off");
@@ -130,13 +145,32 @@ async function connect() {
   }
 
   try {
+    // Constraints tuned for a 6yo child voice + speakerphone playback:
+    // - echoCancellation: ON — assistant audio plays through device speaker.
+    // - noiseSuppression: OFF — Chrome's NS gates soft Czech consonants (š/ř/ž)
+    //   and is the most common cause of "she spoke and Amálka didn't hear".
+    // - autoGainControl: ON — child voice is 10–20 dB quieter than adult;
+    //   AGC brings level above OpenAI's energy-based VAD threshold. On iOS,
+    //   AGC is also bundled with AEC — disabling it breaks echo cancellation.
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
+        echoCancellation: { ideal: true },
+        noiseSuppression: { ideal: false },
+        autoGainControl: { ideal: true },
+        channelCount: { ideal: 1 },
+        sampleRate: { ideal: 48000 },
+        sampleSize: { ideal: 16 },
       },
     });
+    const settings = mediaStream.getAudioTracks()[0]?.getSettings?.() ?? {};
+    console.log("[Amálka] mic settings", JSON.stringify({
+      ec: settings.echoCancellation,
+      ns: settings.noiseSuppression,
+      agc: settings.autoGainControl,
+      sr: settings.sampleRate,
+      ch: settings.channelCount,
+      dev: settings.deviceId ? "ok" : "?",
+    }));
   } catch (e) {
     setStatus("povol mikrofon, prosím");
     setState("off");
@@ -154,8 +188,9 @@ async function connect() {
   const audioEl = $("amalkaAudio");
   pc.ontrack = (e) => {
     audioEl.srcObject = e.streams[0];
-    setupAnalyser(e.streams[0]);
+    setupOutputAnalyser(e.streams[0]);
   };
+  setupInputAnalyser(mediaStream);
 
   dataCh = pc.createDataChannel("oai-events");
   dataCh.onopen = () => {
@@ -222,21 +257,24 @@ async function connect() {
   }, expiryMs);
 }
 
-function setupAnalyser(stream) {
-  if (audioCtx) {
-    try { audioCtx.close(); } catch {}
-  }
+function ensureAudioCtx() {
+  if (audioCtx) return audioCtx;
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  const src = audioCtx.createMediaStreamSource(stream);
-  analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 256;
-  analyser.smoothingTimeConstant = 0.4;
-  src.connect(analyser);
-  const buf = new Uint8Array(analyser.frequencyBinCount);
+  return audioCtx;
+}
+
+function setupOutputAnalyser(stream) {
+  const ctx = ensureAudioCtx();
+  const src = ctx.createMediaStreamSource(stream);
+  outAnalyser = ctx.createAnalyser();
+  outAnalyser.fftSize = 256;
+  outAnalyser.smoothingTimeConstant = 0.4;
+  src.connect(outAnalyser);
+  const buf = new Uint8Array(outAnalyser.frequencyBinCount);
   cancelAnimationFrame(rafId);
   function tick() {
-    if (!analyser) return;
-    analyser.getByteTimeDomainData(buf);
+    if (!outAnalyser) return;
+    outAnalyser.getByteTimeDomainData(buf);
     let sum = 0;
     for (let i = 0; i < buf.length; i++) {
       const v = (buf[i] - 128) / 128;
@@ -251,6 +289,70 @@ function setupAnalyser(stream) {
     rafId = requestAnimationFrame(tick);
   }
   rafId = requestAnimationFrame(tick);
+}
+
+// Input analyser drives the ring around the mic button — gives the child
+// immediate visual feedback that her mic is being heard. Also feeds a
+// client-side "she's speaking but server VAD didn't fire" diagnostic so we
+// can spot config regressions in production.
+function setupInputAnalyser(stream) {
+  const ctx = ensureAudioCtx();
+  const src = ctx.createMediaStreamSource(stream);
+  inAnalyser = ctx.createAnalyser();
+  inAnalyser.fftSize = 1024;
+  inAnalyser.smoothingTimeConstant = 0.6;
+  src.connect(inAnalyser);
+  const buf = new Float32Array(inAnalyser.fftSize);
+  cancelAnimationFrame(inRafId);
+  function tick() {
+    if (!inAnalyser) return;
+    inAnalyser.getFloatTimeDomainData(buf);
+    let sum = 0;
+    let peak = 0;
+    for (let i = 0; i < buf.length; i++) {
+      const v = buf[i];
+      sum += v * v;
+      const a = v < 0 ? -v : v;
+      if (a > peak) peak = a;
+    }
+    const rms = Math.sqrt(sum / buf.length);
+    // Child voice rarely exceeds 0.2 RMS even with AGC — gain up.
+    const lvl = Math.min(1, rms * 6);
+    inSmoothed = inSmoothed * 0.55 + lvl * 0.45;
+    inPeak = peak;
+
+    // Drive the ring's CSS var; CSS scales/opacity from --lvl 0..1.
+    if (ringEl && !isPaused && micUnlocked) {
+      ringEl.style.setProperty("--lvl", inSmoothed.toFixed(3));
+      ringEl.classList.toggle("listening", inSmoothed > 0.08);
+    } else if (ringEl) {
+      ringEl.style.removeProperty("--lvl");
+      ringEl.classList.remove("listening");
+    }
+
+    // Diagnostic: track sustained input without server speech_started.
+    const now = performance.now();
+    if (inSmoothed > 0.12 && micUnlocked && !isPaused) {
+      if (!inSpeakingSince) inSpeakingSince = now;
+      // If the kid has been talking for 1.5s and the server VAD has not fired
+      // since at least 2s before now, log it — surfaces VAD threshold misses
+      // without spamming the console.
+      if (
+        now - inSpeakingSince > 1500 &&
+        now - lastSpeechStartedAt > 3500
+      ) {
+        console.warn(
+          "[Amálka] input audible ~1.5s but no speech_started — VAD may be too strict",
+          { lvl: inSmoothed.toFixed(3), peak: inPeak.toFixed(3) },
+        );
+        inSpeakingSince = now;
+      }
+    } else {
+      inSpeakingSince = 0;
+    }
+    inRafId = requestAnimationFrame(tick);
+  }
+  inRafId = requestAnimationFrame(tick);
 }
 
 // Bounded LRU of tool-call IDs to avoid unbounded growth in long sessions.
@@ -391,6 +493,7 @@ function sendUsageBeacon() {
 
 function handleEvent(ev) {
   if (ev.type === "input_audio_buffer.speech_started") {
+    lastSpeechStartedAt = performance.now();
     setStatus("poslouchám tě");
   } else if (ev.type === "input_audio_buffer.speech_stopped") {
     setStatus("přemýšlím");

@@ -64,7 +64,21 @@
   .mic[data-state="off"]::before{content:"🎤"}
   .mic[data-state="on"]::before{content:"⏸"}
   .mic[data-state="loading"]::before{content:"…"}
-  .ring{position:absolute;width:170px;height:170px;border-radius:50%;border:3px solid var(--pink);opacity:.4;animation:pulse 2.4s ease-in-out infinite;pointer-events:none}
+  .ring{--lvl:0;position:absolute;width:170px;height:170px;border-radius:50%;
+    border:3px solid var(--pink);opacity:.4;pointer-events:none;
+    animation:pulse 2.4s ease-in-out infinite;transition:none;
+  }
+  /* When the mic is actively listening, the idle pulse pauses and the ring
+     scales + brightens with live input level. Gives the child an immediate
+     "I hear you!" signal even before the server VAD commits to a turn. */
+  .ring.listening{
+    animation:none;
+    border-color:#7BC4A4;
+    opacity:calc(.45 + var(--lvl) * .55);
+    transform:scale(calc(1 + var(--lvl) * .22));
+    box-shadow:0 0 calc(8px + var(--lvl) * 26px) rgba(123,196,164,.55);
+    transition:transform .08s ease-out, opacity .08s ease-out, box-shadow .12s ease-out;
+  }
   .mic-wrap{position:relative;display:flex;align-items:center;justify-content:center}
   .amalka,.head,.ear,.antenna,.eye,.mouth,.cheek,.lid{pointer-events:none}
   @keyframes pulse{0%,100%{transform:scale(1);opacity:.3}50%{transform:scale(1.1);opacity:.6}}
