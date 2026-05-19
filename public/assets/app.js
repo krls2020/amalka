@@ -28,21 +28,31 @@ function setState(s) {
 function speakClass(on) {
   head.classList.toggle("speaking", on);
 }
+function showImagePlaceholder() {
+  storyImg.removeAttribute("src");
+  imgOverlay.classList.add("placeholder", "show");
+  amalkaEl.classList.add("shrink");
+  clearTimeout(activeImageTimer);
+}
 function showImage(url) {
+  imgOverlay.classList.remove("placeholder");
   storyImg.src = url;
   storyImg.onload = () => {
     amalkaEl.classList.add("shrink");
     imgOverlay.classList.add("show");
   };
   clearTimeout(activeImageTimer);
-  activeImageTimer = setTimeout(() => hideImage(), 25000);
+  activeImageTimer = setTimeout(() => hideImage(), 45000);
 }
 function hideImage() {
-  imgOverlay.classList.remove("show");
+  imgOverlay.classList.remove("show", "placeholder");
   amalkaEl.classList.remove("shrink");
   clearTimeout(activeImageTimer);
 }
-imgOverlay.addEventListener("click", hideImage);
+imgOverlay.addEventListener("click", (e) => {
+  e.stopPropagation();
+  hideImage();
+});
 
 setInterval(() => {
   head.classList.add("blinking");
@@ -161,47 +171,67 @@ function setupAnalyser(stream) {
   rafId = requestAnimationFrame(tick);
 }
 
-async function handleToolCall(call) {
+const handledCalls = new Set();
+
+function handleToolCall(call) {
   const callId = call.call_id;
+  if (!callId || handledCalls.has(callId)) return;
+  handledCalls.add(callId);
+
+  if (call.name !== "nakresli_obrazek") {
+    sendToolAck(callId, { success: false, message: "Neznámý nástroj." });
+    return;
+  }
+
   let args = {};
   try {
     args = JSON.parse(call.arguments || "{}");
   } catch {}
-  if (call.name !== "nakresli_obrazek") return;
-  setStatus("kreslím obrázek…");
-  try {
-    const r = await fetch("/api/image/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        popis: args.popis ?? "",
-        nalada: args.nalada ?? "veselá",
-        nonce,
-      }),
+
+  sendToolAck(callId, {
+    success: true,
+    message:
+      "Obrázek se mi kreslí na pozadí — Anežce se zobrazí sám za chvilku. Ty pokračuj v povídání, ne v popisu toho co kreslíš.",
+  });
+
+  showImagePlaceholder();
+
+  fetch("/api/image/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      popis: args.popis ?? "",
+      nalada: args.nalada ?? "veselá",
+      nonce,
+    }),
+  })
+    .then((r) => r.json())
+    .then((out) => {
+      if (out.ok && out.url) {
+        showImage(out.url);
+      } else {
+        console.warn("image gen failed", out);
+        hideImage();
+      }
+    })
+    .catch((e) => {
+      console.error("image generate failed", e);
+      hideImage();
     });
-    const out = await r.json();
-    if (out.ok && out.url) {
-      showImage(out.url);
-      sendToolResult(callId, { success: true, message: "Obrázek je hotový. Krátce ho popiš, ale neopakuj co je vidět." });
-    } else {
-      sendToolResult(callId, { success: false, message: "Štětec mi spadl, raději budu vyprávět." });
-    }
-  } catch (e) {
-    console.error("image generate failed", e);
-    sendToolResult(callId, { success: false, message: "Něco se pokazilo, raději budu vyprávět." });
-  }
 }
 
-function sendToolResult(callId, output) {
+function sendToolAck(callId, output) {
   if (!dataCh || dataCh.readyState !== "open") return;
-  dataCh.send(JSON.stringify({
-    type: "conversation.item.create",
-    item: {
-      type: "function_call_output",
-      call_id: callId,
-      output: JSON.stringify(output),
-    },
-  }));
+  dataCh.send(
+    JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "function_call_output",
+        call_id: callId,
+        output: JSON.stringify(output),
+      },
+    }),
+  );
   dataCh.send(JSON.stringify({ type: "response.create" }));
 }
 
@@ -210,23 +240,22 @@ function handleEvent(ev) {
     setStatus("poslouchám tě");
   } else if (ev.type === "input_audio_buffer.speech_stopped") {
     setStatus("přemýšlím");
-  } else if (ev.type === "response.audio.delta" || ev.type === "response.output_audio.delta") {
+  } else if (
+    ev.type === "response.audio.delta" ||
+    ev.type === "response.output_audio.delta"
+  ) {
     setStatus("mluvím");
-  } else if (ev.type === "response.done" || ev.type === "response.completed") {
-    setStatus("povídej!");
-    if (ev.response?.output) {
-      for (const item of ev.response.output) {
-        if (item.type === "function_call") {
-          handleToolCall(item);
-        }
-      }
-    }
   } else if (ev.type === "response.function_call_arguments.done") {
     handleToolCall({
       call_id: ev.call_id,
       name: ev.name,
       arguments: ev.arguments,
     });
+  } else if (
+    ev.type === "response.done" ||
+    ev.type === "response.completed"
+  ) {
+    setStatus("povídej!");
   } else if (ev.type === "error") {
     console.error("Realtime error", ev);
     setStatus("něco se pokazilo");
@@ -240,13 +269,23 @@ async function togglePause() {
   setStatus(isPaused ? "amálka spinká, klikni" : "povídej!");
 }
 
-micBtn.addEventListener("click", async () => {
+async function onMicTap() {
+  console.log("[Amálka] mic tap, pc?", !!pc);
+  setStatus("...");
   if (!pc) {
     await connect();
     return;
   }
   await togglePause();
-});
+}
+
+micBtn.addEventListener("click", onMicTap);
+micBtn.addEventListener("touchend", (e) => {
+  e.preventDefault();
+  onMicTap();
+}, { passive: false });
+
+console.log("[Amálka] app.js loaded, mic listener attached", !!micBtn);
 
 window.addEventListener("beforeunload", () => {
   if (sessionId) {

@@ -64,8 +64,9 @@
   .mic[data-state="off"]::before{content:"🎤"}
   .mic[data-state="on"]::before{content:"⏸"}
   .mic[data-state="loading"]::before{content:"…"}
-  .ring{position:absolute;width:170px;height:170px;border-radius:50%;border:3px solid var(--pink);opacity:.4;animation:pulse 2.4s ease-in-out infinite}
+  .ring{position:absolute;width:170px;height:170px;border-radius:50%;border:3px solid var(--pink);opacity:.4;animation:pulse 2.4s ease-in-out infinite;pointer-events:none}
   .mic-wrap{position:relative;display:flex;align-items:center;justify-content:center}
+  .amalka,.head,.ear,.antenna,.eye,.mouth,.cheek,.lid{pointer-events:none}
   @keyframes pulse{0%,100%{transform:scale(1);opacity:.3}50%{transform:scale(1.1);opacity:.6}}
   audio{display:none}
   #imgOverlay{position:fixed;inset:0;background:rgba(255,246,236,0);
@@ -79,10 +80,17 @@
     transform:scale(.96);transition:transform .6s ease;
   }
   #imgOverlay.show img{transform:scale(1)}
+  #imgOverlay.placeholder img{opacity:0}
+  #imgOverlay.placeholder::before{content:"";position:absolute;width:80%;max-width:540px;aspect-ratio:1/1;
+    background:linear-gradient(120deg,#FBE6D6,#F4B5C1,#D9C2F0,#FBE6D6);
+    background-size:300% 300%;animation:shimmer 2.4s linear infinite;border-radius:18px;opacity:.55;
+    box-shadow:0 24px 60px -16px rgba(180,120,90,.35);
+  }
+  #imgOverlay.placeholder::after{content:"štětec maluje…";position:absolute;bottom:8vh;font-size:14px;
+    color:#5C8FA8;letter-spacing:.04em;opacity:.85;
+  }
   .amalka.shrink{transform:translate(34vw,32vh) scale(.34);transition:transform .7s cubic-bezier(.4,0,.2,1)}
   .amalka{transition:transform .7s cubic-bezier(.4,0,.2,1)}
-  .imgShimmer{width:80%;aspect-ratio:1/1;background:linear-gradient(120deg,#FBE6D6,#F4B5C1,#D9C2F0,#FBE6D6);
-    background-size:300% 300%;animation:shimmer 2.4s linear infinite;border-radius:18px;opacity:.7}
   @keyframes shimmer{0%{background-position:0% 0%}100%{background-position:300% 0%}}
 </style>
 </head>

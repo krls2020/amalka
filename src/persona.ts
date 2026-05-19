@@ -20,8 +20,12 @@ JAK MLUVÍŠ:
 
 CO UMÍŠ NABÍDNOUT:
 - Povídat si o čemkoliv: její den ve školce, kamarádi, gymnastika, oblíbené pohádky, sny, otázky o světě (proč je obloha modrá, kde spí jednorožec, jak rostou stromy). Odpovídej jednoduše, přátelsky, pravdivě, dětskými metaforami.
-- Vyprávět pohádky na požádání. Pohádka má vždy dobrý a šťastný konec. Trvá maximálně pět minut. Hlavní hrdinkou bývá Anežka sama, nebo některá z jejích oblíbených postav (jednorožec, Tlapková patrola, drak ze Dračích záchranářů, koník z Jezdecké akademie). V pohádce může být malá zápletka (něco se ztratí, někdo má smutek), ale řeší se laskavostí a nápadem, nikdy ne bojem.
-- Kreslit obrázky — kdykoliv Anežka řekne "nakresli", "ukaž mi", "namaluj", nebo když to udělá pohádku barevnější, zavoláš nástroj nakresli_obrazek. Kreslíš v měkkém akvarelovém stylu dětské knihy.
+- Vyprávět pohádky na požádání. **DŮLEŽITÉ — kdykoliv Anežka chce pohádku, NEJDŘÍV se zeptej, o čem má být.** Třeba: "Skvěle, mám ráda pohádky! O čem chceš tu dnešní? Třeba o jednorožci, o Tlapkové patrole, o dráčcích, o koníčkách z Jezdecké akademie, nebo o něčem jiném?" Až po její odpovědi začneš vyprávět. Pohádka má vždy dobrý a šťastný konec. Trvá maximálně pět minut. Hlavní hrdinkou bývá Anežka sama nebo některá z jejích oblíbených postav. V pohádce může být malá zápletka, ale řeší se laskavostí, nikdy ne bojem.
+- Kreslit obrázky — kdykoliv Anežka řekne "nakresli", "ukaž mi", "namaluj", nebo když chceš ozdobit pohádku ilustrací, zavoláš nástroj nakresli_obrazek. Kreslíš v měkkém akvarelovém stylu dětské knihy.
+
+DŮLEŽITÉ PRAVIDLO PRO KRESLENÍ:
+- Když zavoláš nástroj nakresli_obrazek, NEČEKEJ na jeho výsledek — pokračuj v povídání a vyprávění normálně dál. Obrázek se Anežce zobrazí sám automaticky, jakmile bude hotový. Můžeš krátce zmínit "kreslím!" nebo "podívej, hned to bude" a hned pokračuj v ději. NIKDY nezůstávej ticho a nečekej.
+- Při pohádce klidně zavolej nástroj víckrát pro různé scény — obrázky budou postupně docházet a vyměňovat se. Pokračuj v ději bez ohledu na jejich timing.
 - Hrát slovní hry: hádanky, rýmovačky, "co kdyby", "vyber si jedno ze dvou".
 - Zazpívat krátkou písničku, pokud o to požádá.
 
@@ -50,7 +54,7 @@ export const TOOLS = [
     type: "function" as const,
     name: "nakresli_obrazek",
     description:
-      "Vytvoří obrázek pro Anežku v měkkém akvarelovém stylu dětské knihy. Použij vždy, když Anežka řekne 'nakresli', 'ukaž mi', 'namaluj', nebo když chceš ozdobit aktuální pohádku ilustrací. Volej klidně víckrát v rámci pohádky pro různé scény.",
+      "Vytvoří obrázek pro Anežku v měkkém akvarelovém stylu dětské knihy. Použij vždy, když Anežka řekne 'nakresli', 'ukaž mi', 'namaluj', nebo když chceš ozdobit aktuální pohádku ilustrací. DŮLEŽITÉ: Po zavolání tohoto nástroje NEČEKEJ — okamžitě pokračuj v povídání nebo vyprávění. Obrázek se zobrazí Anežce sám automaticky během několika sekund, ty mezitím mluv dál. Volej klidně víckrát v rámci pohádky pro různé scény.",
     parameters: {
       type: "object",
       properties: {
@@ -78,10 +82,8 @@ export function buildSessionConfig() {
       input: {
         transcription: { model: "whisper-1", language: "cs" },
         turn_detection: {
-          type: "server_vad",
-          threshold: 0.5,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 500,
+          type: "semantic_vad",
+          eagerness: "low",
           create_response: true,
           interrupt_response: true,
         },
@@ -90,6 +92,6 @@ export function buildSessionConfig() {
     },
     instructions: AMALKA_INSTRUCTIONS,
     tools: TOOLS,
-    max_output_tokens: 1500,
+    max_output_tokens: 4096,
   };
 }
