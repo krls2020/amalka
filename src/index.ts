@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { log } from "./lib/redact.ts";
 import { cache, cacheIncrFloat } from "./storage.ts";
+import sessionRoutes from "./routes/session.ts";
+import imageRoutes from "./routes/image.ts";
 
 const app = new Hono();
 
@@ -59,6 +61,9 @@ app.get("/api/health", async (c) => {
     appUrl: APP_URL || null,
   });
 });
+
+app.route("/", sessionRoutes);
+app.route("/", imageRoutes);
 
 app.get("/api/debug/usage", async (c) => {
   const key = c.req.query("key");

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#FCE7E0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Amálka">
+<link rel="icon" type="image/svg+xml" href="/assets/icon.svg">
+<link rel="apple-touch-icon" href="/assets/icon.svg">
+<link rel="manifest" href="/manifest.webmanifest">
+<title>Amálka</title>
+<style>
+  :root{
+    --plush:#F5D8C6;--pink:#F4B5C1;--teal:#5C8FA8;--lila:#D9C2F0;
+    --bg1:#FFF6EC;--bg2:#FCE7E0;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;
+    background:radial-gradient(circle at 50% 35%,var(--bg1),var(--bg2) 80%);
+    font-family:-apple-system,BlinkMacSystemFont,system-ui,"Segoe UI",sans-serif;
+    color:var(--teal);user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;
+  }
+  #stage{height:100dvh;display:flex;flex-direction:column;align-items:center;justify-content:space-between;padding:32px 20px 36px}
+  .topbar{width:100%;display:flex;justify-content:space-between;align-items:center;font-size:13px;opacity:.7}
+  .amalka{width:min(72vw,260px);aspect-ratio:1/1;position:relative;display:flex;align-items:center;justify-content:center}
+  .head{position:relative;width:100%;height:100%;border-radius:48% 48% 46% 46%/52% 52% 48% 48%;
+    background:linear-gradient(180deg,#FBE6D6,var(--plush));
+    box-shadow:0 24px 48px -16px rgba(180,120,90,.32),inset 0 -12px 20px rgba(220,170,150,.4);
+    transform-origin:50% 60%;animation:breath 4.2s ease-in-out infinite;
+  }
+  .ear{position:absolute;width:30%;height:30%;background:linear-gradient(180deg,#FBE6D6,var(--plush));
+    border-radius:60% 60% 40% 40%;top:-8%;box-shadow:inset -6px -8px 10px rgba(220,170,150,.5);
+  }
+  .ear.l{left:8%;transform:rotate(-12deg)}
+  .ear.r{right:8%;transform:rotate(12deg)}
+  .ear::after{content:"";position:absolute;inset:25% 22%;background:var(--pink);border-radius:50%;opacity:.7}
+  .antenna{position:absolute;top:-26%;left:50%;width:4px;height:28%;background:#E8C9B5;border-radius:4px;transform-origin:bottom center;animation:sway 3.6s ease-in-out infinite}
+  .antenna::after{content:"";position:absolute;top:-12px;left:-7px;width:18px;height:18px;border-radius:50%;background:var(--lila);box-shadow:0 0 14px rgba(217,194,240,.9)}
+  .eye{position:absolute;top:38%;width:18%;aspect-ratio:1/1;background:var(--teal);border-radius:50%;
+    box-shadow:inset -4px -3px 6px rgba(0,0,0,.18);overflow:hidden;
+  }
+  .eye.l{left:22%}.eye.r{right:22%}
+  .eye::before{content:"";position:absolute;top:18%;left:55%;width:34%;height:34%;background:#fff;border-radius:50%;opacity:.9}
+  .eye::after{content:"";position:absolute;top:55%;left:25%;width:18%;height:18%;background:#fff;border-radius:50%;opacity:.7}
+  .lid{position:absolute;inset:0;background:linear-gradient(180deg,#FBE6D6,var(--plush));transform:scaleY(0);transform-origin:top;transition:transform .12s ease-out}
+  .blinking .lid{transform:scaleY(1)}
+  .mouth{position:absolute;top:62%;left:50%;transform:translate(-50%,0);width:18%;height:6%;background:var(--pink);border-radius:0 0 100% 100%/0 0 100% 100%;transition:height .08s ease-out}
+  .speaking .mouth{height:14%}
+  .cheek{position:absolute;top:52%;width:14%;height:8%;border-radius:50%;background:#F2A4B0;opacity:.55;filter:blur(2px)}
+  .cheek.l{left:14%}.cheek.r{right:14%}
+  @keyframes breath{0%,100%{transform:scale(1)}50%{transform:scale(1.012)}}
+  @keyframes sway{0%,100%{transform:rotate(-3deg)}50%{transform:rotate(3deg)}}
+  .controls{display:flex;flex-direction:column;align-items:center;gap:18px;width:100%}
+  .status{font-size:14px;letter-spacing:.04em;text-transform:lowercase;color:var(--teal);opacity:.85;min-height:18px}
+  .mic{width:140px;height:140px;border-radius:50%;border:none;cursor:pointer;
+    background:radial-gradient(circle at 35% 30%,#FCD2DC,var(--pink));
+    box-shadow:0 18px 36px -10px rgba(244,181,193,.7),inset 0 -8px 12px rgba(200,120,140,.3);
+    color:#fff;font-size:48px;display:flex;align-items:center;justify-content:center;
+    transition:transform .12s ease-out;
+  }
+  .mic:active{transform:scale(.96)}
+  .mic[data-state="off"]::before{content:"🎤"}
+  .mic[data-state="on"]::before{content:"⏸"}
+  .mic[data-state="loading"]::before{content:"…"}
+  .ring{position:absolute;width:170px;height:170px;border-radius:50%;border:3px solid var(--pink);opacity:.4;animation:pulse 2.4s ease-in-out infinite}
+  .mic-wrap{position:relative;display:flex;align-items:center;justify-content:center}
+  @keyframes pulse{0%,100%{transform:scale(1);opacity:.3}50%{transform:scale(1.1);opacity:.6}}
+  audio{display:none}
+  #imgOverlay{position:fixed;inset:0;background:rgba(255,246,236,0);
+    backdrop-filter:blur(0px);pointer-events:none;opacity:0;
+    display:flex;align-items:center;justify-content:center;padding:18px;
+    transition:opacity .6s ease,backdrop-filter .6s ease,background .6s ease;
+  }
+  #imgOverlay.show{opacity:1;pointer-events:auto;background:rgba(255,246,236,.4);backdrop-filter:blur(6px)}
+  #imgOverlay img{max-width:100%;max-height:100%;border-radius:18px;
+    box-shadow:0 24px 60px -16px rgba(180,120,90,.45);
+    transform:scale(.96);transition:transform .6s ease;
+  }
+  #imgOverlay.show img{transform:scale(1)}
+  .amalka.shrink{transform:translate(34vw,32vh) scale(.34);transition:transform .7s cubic-bezier(.4,0,.2,1)}
+  .amalka{transition:transform .7s cubic-bezier(.4,0,.2,1)}
+  .imgShimmer{width:80%;aspect-ratio:1/1;background:linear-gradient(120deg,#FBE6D6,#F4B5C1,#D9C2F0,#FBE6D6);
+    background-size:300% 300%;animation:shimmer 2.4s linear infinite;border-radius:18px;opacity:.7}
+  @keyframes shimmer{0%{background-position:0% 0%}100%{background-position:300% 0%}}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="topbar">
+    <span id="stateLabel">amálka</span>
+    <span id="costLabel" style="font-variant-numeric:tabular-nums"></span>
+  </div>
+  <div class="amalka">
+    <div id="head" class="head">
+      <div class="ear l"></div>
+      <div class="ear r"></div>
+      <div class="antenna"></div>
+      <div class="cheek l"></div>
+      <div class="cheek r"></div>
+      <div class="eye l"><div class="lid"></div></div>
+      <div class="eye r"><div class="lid"></div></div>
+      <div class="mouth" id="mouth"></div>
+    </div>
+  </div>
+  <div class="controls">
+    <div class="status" id="status">klikni a povídej</div>
+    <div class="mic-wrap">
+      <div class="ring"></div>
+      <button id="mic" class="mic" data-state="off" aria-label="mikrofon"></button>
+    </div>
+  </div>
+</div>
+<div id="imgOverlay"><img id="storyImg" alt=""></div>
+<audio id="amalkaAudio" autoplay playsinline></audio>
+<script type="module" src="/assets/app.js"></script>
+</body>
+</html>

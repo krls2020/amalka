@@ -4,7 +4,3 @@ bun.lockb
 .env.local
 .DS_Store
 *.log
-public/index.html
-public/assets
-web/dist
-web/node_modules

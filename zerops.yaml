@@ -21,4 +21,8 @@ zerops:
         S3_ACCESS_KEY_ID: ${imgstore_accessKeyId}
         S3_SECRET_ACCESS_KEY: ${imgstore_secretAccessKey}
         S3_BUCKET: ${imgstore_bucketName}
-      start: zsc noop --silent
+      start: bun run src/index.ts
+      healthCheck:
+        httpGet:
+          port: 3000
+          path: /api/health
