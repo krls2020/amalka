@@ -1,0 +1,24 @@
+zerops:
+  - setup: api
+    build:
+      base: bun@1.3.9
+      buildCommands:
+        - bun install --frozen-lockfile || bun install
+      deployFiles:
+        - ./
+      cache:
+        - node_modules
+    run:
+      base: bun@1.3.9
+      ports:
+        - port: 3000
+          httpSupport: true
+      envVariables:
+        PORT: 3000
+        APP_URL: ${zeropsSubdomain}
+        REDIS_URL: ${cache_connectionString}
+        S3_ENDPOINT: ${imgstore_apiUrl}
+        S3_ACCESS_KEY_ID: ${imgstore_accessKeyId}
+        S3_SECRET_ACCESS_KEY: ${imgstore_secretAccessKey}
+        S3_BUCKET: ${imgstore_bucketName}
+      start: zsc noop --silent
