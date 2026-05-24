@@ -95,22 +95,22 @@ export async function generateImage(prompt: string): Promise<Uint8Array> {
 export function buildImagePrompt(popis: string, nalada: string): string {
   const moodMap: Record<string, string> = {
     veselá:
-      "warm sunlit afternoon, gentle pastels accented with deeper jewel tones, lively but harmonious",
+      "warm late-afternoon sun, resonant saturated colors (not sugary), a single bold light source casting long gentle shadows",
     tajemná:
-      "moonlit dusk, soft drifting mist, faint glowing fireflies and starlight, dreamlike enchantment",
+      "deep moonlit blues with warm amber accents from a lantern or firefly, painterly mist, a sense of quiet wonder",
     klidná:
-      "soft dawn light, peaceful stillness, low mist over the ground, contemplative atmosphere",
+      "predawn or dusk, low contrast, muted painterly palette, peaceful stillness, breath of mist",
     dobrodružná:
-      "golden hour, sense of journey and depth, gentle wind, distant horizon hinting at wonder",
+      "cinematic golden hour from a low angle, dynamic composition, distant horizon, a feeling of being on the cusp of something",
   };
   const moodTag = moodMap[nalada] ?? moodMap["veselá"];
   return [
-    "Painterly storybook illustration in mixed watercolor and fine ink linework.",
-    "Style sits between Studio Ghibli backgrounds, Petr Sís linework, and the soft glow of Edmund Dulac fairy tale paintings — magical and slightly cinematic, never flat or cartoonish.",
-    "Atmospheric depth: layered foreground / midground / background, soft volumetric light, gentle painterly texture, a touch of enchantment (subtle sparkles, glowing edges, drifting mist where it fits).",
-    "Palette is soft but not sugary — pastels grounded by deeper jewel-tone shadows and warm highlights.",
-    "Composition is calm, balanced, with room to breathe; detailed where it matters, suggestive elsewhere. Leaves space for imagination.",
-    "Wholesome and safe for a bright child: no scary, violent, gory or unsettling elements; characters are kind and warm. No text, no letters, no captions anywhere in the image.",
+    "Painterly art-book illustration — closer to a fine-art picture book for older readers than a cute kids' cartoon. Hand-painted feel: visible watercolor washes, fine ink linework, painterly texture, slight imperfection of brush strokes.",
+    "Style references: the poetic atmospheric illustrations of Pavel Čech (Czech), Carson Ellis's folk-tale palette, Lorenzo Mattotti's softer color work, Pascal Campion's small-moment cinematography, Studio Ghibli background paintings. Composition is confident and simple, painted with rich texture.",
+    "Palette: restrained but resonant — jewel-tone accents grounded by warm neutrals, not generic pastel-uniform sweetness. Strong atmosphere and depth from layered light, not from heavy detail.",
+    "Suggested rather than over-detailed: leave painterly space for imagination. Characters are warm and individual, not big-eyed Disney-cute, not flat vector style, not generic stock-illustration look.",
+    "Avoid: flat vector cartoon, big-eyed saccharine character design, candy pastel uniformity, soft-lit safe sweetness, Pixar/Disney styling, generic kids'-book art, photoreal rendering, 3D look.",
+    "Wholesome and safe: never scary, violent, or unsettling; all characters kind and inviting. No text, no letters, no captions, no signage anywhere in the image.",
     `Subject: ${popis}.`,
     `Mood and light: ${moodTag}.`,
   ].join(" ");
