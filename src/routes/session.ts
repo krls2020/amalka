@@ -12,9 +12,15 @@ import { log } from "../lib/redact.ts";
 const r = new Hono();
 
 const MAX_SESSIONS_PER_DAY = 30;
+// Persona calls nakresli_obrazek 1-2× per story; 6 is generous headroom for
+// a few stories per session while capping worst-case spend.
 const MAX_IMAGES_PER_SESSION = Number(
-  process.env.MAX_IMAGES_PER_SESSION ?? "30",
+  process.env.MAX_IMAGES_PER_SESSION ?? "6",
 );
+
+function hashIp(ip: string): string {
+  return new Bun.CryptoHasher("sha256").update(ip).digest("hex").slice(0, 16);
+}
 
 r.post("/api/realtime/session", async (c) => {
   const ip =
@@ -40,7 +46,7 @@ r.post("/api/realtime/session", async (c) => {
   }
 
   try {
-    const secret = await issueClientSecret();
+    const secret = await issueClientSecret(`amalka-${hashIp(ip)}`);
     const nonce = await issueNonce(MAX_IMAGES_PER_SESSION);
     const sessionId = secret.session?.id ?? null;
     log.info(`session issued sessionId=${sessionId} ip=${ip} model=${REALTIME_MODEL}`);
@@ -61,7 +67,8 @@ r.post("/api/realtime/session", async (c) => {
 });
 
 // Realtime pricing per 1M tokens (USD). Override via env if OpenAI changes rates.
-// Defaults: gpt-4o-mini-realtime-preview pricing (matches REALTIME_MODEL default).
+// Defaults: gpt-realtime-mini (current GA cost-efficient model). Full audio/text
+// rates match gpt-4o-mini-realtime-preview; cached_in drops from $0.30 to $0.06.
 // Flagship gpt-realtime is roughly 3× higher — override via PRICE_REALTIME_* envs
 // when REALTIME_MODEL points there.
 const PRICE_PER_M = {
@@ -69,35 +76,50 @@ const PRICE_PER_M = {
   outText: Number(process.env.PRICE_REALTIME_OUT_TEXT ?? "2.4"),
   inAudio: Number(process.env.PRICE_REALTIME_IN_AUDIO ?? "10"),
   outAudio: Number(process.env.PRICE_REALTIME_OUT_AUDIO ?? "20"),
-  cachedIn: Number(process.env.PRICE_REALTIME_CACHED_IN ?? "0.3"),
+  cachedInText: Number(process.env.PRICE_REALTIME_CACHED_IN_TEXT ?? "0.06"),
+  cachedInAudio: Number(process.env.PRICE_REALTIME_CACHED_IN_AUDIO ?? "0.3"),
 };
 
+type CachedDetails = {
+  text_tokens?: number;
+  audio_tokens?: number;
+};
 type UsageDetails = {
   text_tokens?: number;
   audio_tokens?: number;
+  image_tokens?: number;
 };
 type UsageBody = {
   sessionId?: string;
   input_tokens?: number;
   output_tokens?: number;
-  input_token_details?: UsageDetails & { cached_tokens?: number };
+  input_token_details?: UsageDetails & {
+    cached_tokens?: number;
+    cached_tokens_details?: CachedDetails;
+  };
   output_token_details?: UsageDetails;
 };
 
 function usdFromUsage(u: UsageBody): number {
   const inDet = u.input_token_details ?? {};
   const outDet = u.output_token_details ?? {};
-  const cachedIn = Math.max(0, Number(inDet.cached_tokens ?? 0));
   const inText = Math.max(0, Number(inDet.text_tokens ?? 0));
   const inAudio = Math.max(0, Number(inDet.audio_tokens ?? 0));
   const outText = Math.max(0, Number(outDet.text_tokens ?? 0));
   const outAudio = Math.max(0, Number(outDet.audio_tokens ?? 0));
-  // Cached tokens replace text-input for the cached portion at a lower rate.
-  const uncachedInText = Math.max(0, inText - cachedIn);
+  // Per-modality cache split (new payload shape). Fall back to legacy
+  // single cached_tokens applied to text bucket when details are missing.
+  const cDet = inDet.cached_tokens_details ?? {};
+  const cachedTotal = Math.max(0, Number(inDet.cached_tokens ?? 0));
+  const cachedText = Math.max(0, Number(cDet.text_tokens ?? cachedTotal));
+  const cachedAudio = Math.max(0, Number(cDet.audio_tokens ?? 0));
+  const uncachedInText = Math.max(0, inText - cachedText);
+  const uncachedInAudio = Math.max(0, inAudio - cachedAudio);
   const usd =
     (uncachedInText * PRICE_PER_M.inText +
-      cachedIn * PRICE_PER_M.cachedIn +
-      inAudio * PRICE_PER_M.inAudio +
+      cachedText * PRICE_PER_M.cachedInText +
+      uncachedInAudio * PRICE_PER_M.inAudio +
+      cachedAudio * PRICE_PER_M.cachedInAudio +
       outText * PRICE_PER_M.outText +
       outAudio * PRICE_PER_M.outAudio) /
     1_000_000;
@@ -129,14 +151,16 @@ r.post("/api/session/usage", async (c) => {
 });
 
 r.post("/api/session/end", async (c) => {
+  // NOTE: usage is already billed per-turn via /api/session/usage on every
+  // response.done event. The end-of-session beacon used to re-bill the
+  // accumulated total — that double-counted everything. Now end is just
+  // a lifecycle marker; no recordUsageUsd call here.
   let body: UsageBody = {};
   try {
     body = await c.req.json();
   } catch {}
   if (body.sessionId) {
-    const finalUsd = Math.min(USAGE_CALL_CEILING_USD, usdFromUsage(body));
-    if (finalUsd > 0) await recordUsageUsd(finalUsd);
-    log.info(`session end sessionId=${body.sessionId} finalUsd=${finalUsd.toFixed(4)}`);
+    log.info(`session end sessionId=${body.sessionId}`);
   }
   return c.json({ ok: true });
 });

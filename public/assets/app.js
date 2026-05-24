@@ -195,16 +195,9 @@ async function connect() {
   dataCh = pc.createDataChannel("oai-events");
   dataCh.onopen = () => {
     setStatus("amálka začíná…");
+    // Persona's ZAČÁTEK rule fires the greeting; no need to override here.
     try {
-      dataCh.send(
-        JSON.stringify({
-          type: "response.create",
-          response: {
-            instructions:
-              "Pozdrav Anežku přesně touto větou a nic jiného nepřidávej: 'Ahoj Anežko, tady Amálka! O čem si dneska budeme povídat?' Pak počkej na její odpověď.",
-          },
-        }),
-      );
+      dataCh.send(JSON.stringify({ type: "response.create" }));
     } catch (e) {
       console.warn("initial response.create failed", e);
     }
@@ -226,9 +219,9 @@ async function connect() {
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
 
+  // Model is encoded in the ephemeral client_secret session; no ?model= needed.
   const baseUrl = "https://api.openai.com/v1/realtime";
-  const model = token.model || "gpt-4o-mini-realtime-preview";
-  const sdpRes = await fetch(`${baseUrl}/calls?model=${encodeURIComponent(model)}`, {
+  const sdpRes = await fetch(`${baseUrl}/calls`, {
     method: "POST",
     body: offer.sdp,
     headers: {

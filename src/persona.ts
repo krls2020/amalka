@@ -129,6 +129,16 @@ function buildTranscription() {
   return { model, language: (process.env.TRANSCRIPTION_LANG || "cs").trim() };
 }
 
+function buildTruncation() {
+  // Retention-ratio truncation lets Realtime auto-prune the oldest items when
+  // the conversation grows. retention_ratio=0.8 means keep ~80% of recent
+  // tokens after each turn — keeps cost bounded on long sessions without
+  // suddenly forgetting whole context.
+  const ratio = Number(process.env.TRUNCATION_RATIO);
+  if (!Number.isFinite(ratio) || ratio <= 0 || ratio >= 1) return undefined;
+  return { type: "retention_ratio" as const, retention_ratio: ratio };
+}
+
 export function buildSessionConfig() {
   const input: Record<string, unknown> = {
     turn_detection: buildTurnDetection(),
@@ -138,8 +148,8 @@ export function buildSessionConfig() {
   const tr = buildTranscription();
   if (tr) input.transcription = tr;
 
-  return {
-    type: "realtime" as const,
+  const cfg: Record<string, unknown> = {
+    type: "realtime",
     model: REALTIME_MODEL,
     audio: {
       input,
@@ -151,4 +161,9 @@ export function buildSessionConfig() {
     // long for stories). A hard ceiling caps run-away monologues.
     max_output_tokens: num("MAX_OUTPUT_TOKENS", 1500),
   };
+  const trunc = buildTruncation();
+  if (trunc) cfg.truncation = trunc;
+  const tracing = (process.env.REALTIME_TRACING || "").trim();
+  if (tracing === "auto") cfg.tracing = "auto";
+  return cfg;
 }

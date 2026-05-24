@@ -59,11 +59,15 @@ export type ClientSecretResponse = {
   session: { id: string; [k: string]: unknown };
 };
 
-export async function issueClientSecret(): Promise<ClientSecretResponse> {
+export async function issueClientSecret(
+  safetyIdentifier?: string,
+): Promise<ClientSecretResponse> {
+  const headers: Record<string, string> = {};
+  if (safetyIdentifier) headers["OpenAI-Safety-Identifier"] = safetyIdentifier;
   const res = await openaiFetch("/realtime/client_secrets", {
     method: "POST",
+    headers,
     body: JSON.stringify({
-      expires_after: { anchor: "created_at", seconds: 600 },
       session: buildSessionConfig(),
     }),
   });
