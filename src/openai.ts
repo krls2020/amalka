@@ -78,10 +78,10 @@ export async function generateImage(prompt: string): Promise<Uint8Array> {
       prompt,
       n: 1,
       size: "1024x1024",
-      quality: "low",
+      quality: process.env.IMAGE_QUALITY || "medium",
     }),
     retries: 1,
-    timeoutMs: 60_000,
+    timeoutMs: 90_000,
   });
   const data = (await res.json()) as { data: Array<{ b64_json: string }> };
   const b64 = data.data?.[0]?.b64_json;
@@ -91,11 +91,24 @@ export async function generateImage(prompt: string): Promise<Uint8Array> {
 
 export function buildImagePrompt(popis: string, nalada: string): string {
   const moodMap: Record<string, string> = {
-    veselá: "joyful, bright colors, sunny",
-    tajemná: "soft mystery, gentle shadows, magical",
-    klidná: "calm, peaceful, serene",
-    dobrodružná: "adventurous, energetic, dynamic",
+    veselá:
+      "warm sunlit afternoon, gentle pastels accented with deeper jewel tones, lively but harmonious",
+    tajemná:
+      "moonlit dusk, soft drifting mist, faint glowing fireflies and starlight, dreamlike enchantment",
+    klidná:
+      "soft dawn light, peaceful stillness, low mist over the ground, contemplative atmosphere",
+    dobrodružná:
+      "golden hour, sense of journey and depth, gentle wind, distant horizon hinting at wonder",
   };
-  const moodTag = moodMap[nalada] ?? "joyful";
-  return `Watercolor illustration in the style of a soft Czech children's book, pastel palette, gentle brush strokes, no scary or violent elements, no text in the image, age-appropriate for a 6-year-old child. Subject: ${popis}. Mood: ${moodTag}.`;
+  const moodTag = moodMap[nalada] ?? moodMap["veselá"];
+  return [
+    "Painterly storybook illustration in mixed watercolor and fine ink linework.",
+    "Style sits between Studio Ghibli backgrounds, Petr Sís linework, and the soft glow of Edmund Dulac fairy tale paintings — magical and slightly cinematic, never flat or cartoonish.",
+    "Atmospheric depth: layered foreground / midground / background, soft volumetric light, gentle painterly texture, a touch of enchantment (subtle sparkles, glowing edges, drifting mist where it fits).",
+    "Palette is soft but not sugary — pastels grounded by deeper jewel-tone shadows and warm highlights.",
+    "Composition is calm, balanced, with room to breathe; detailed where it matters, suggestive elsewhere. Leaves space for imagination.",
+    "Wholesome and safe for a bright child: no scary, violent, gory or unsettling elements; characters are kind and warm. No text, no letters, no captions anywhere in the image.",
+    `Subject: ${popis}.`,
+    `Mood and light: ${moodTag}.`,
+  ].join(" ");
 }

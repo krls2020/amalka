@@ -78,7 +78,14 @@ r.post("/api/image/generate", async (c) => {
 
   // 60 days — long enough for repeated story themes, short enough to bound S3 growth.
   await cacheSet(cacheKey, objectName, 60 * 60 * 24 * 60);
-  await recordUsageUsd(0.011);
+  // gpt-image-1 1024x1024: low ~$0.011, medium ~$0.042, high ~$0.167.
+  const qualityCost: Record<string, number> = {
+    low: 0.011,
+    medium: 0.042,
+    high: 0.167,
+  };
+  const q = (process.env.IMAGE_QUALITY || "medium").toLowerCase();
+  await recordUsageUsd(qualityCost[q] ?? 0.042);
 
   return c.json({
     ok: true,
