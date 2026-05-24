@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { issueClientSecret } from "../openai.ts";
+import { REALTIME_MODEL } from "../persona.ts";
 import {
   rateLimit,
   dailyBudgetCheck,
@@ -42,13 +43,14 @@ r.post("/api/realtime/session", async (c) => {
     const secret = await issueClientSecret();
     const nonce = await issueNonce(MAX_IMAGES_PER_SESSION);
     const sessionId = secret.session?.id ?? null;
-    log.info(`session issued sessionId=${sessionId} ip=${ip}`);
+    log.info(`session issued sessionId=${sessionId} ip=${ip} model=${REALTIME_MODEL}`);
     return c.json({
       ok: true,
       clientSecret: secret.value,
       expiresAt: secret.expires_at,
       sessionId,
       nonce,
+      model: REALTIME_MODEL,
       maxImages: MAX_IMAGES_PER_SESSION,
       maxSessionMinutes: Number(process.env.MAX_SESSION_MINUTES ?? "30"),
     });
@@ -59,13 +61,15 @@ r.post("/api/realtime/session", async (c) => {
 });
 
 // Realtime pricing per 1M tokens (USD). Override via env if OpenAI changes rates.
-// Defaults track gpt-realtime public pricing as of 2026-05.
+// Defaults: gpt-4o-mini-realtime-preview pricing (matches REALTIME_MODEL default).
+// Flagship gpt-realtime is roughly 3× higher — override via PRICE_REALTIME_* envs
+// when REALTIME_MODEL points there.
 const PRICE_PER_M = {
-  inText: Number(process.env.PRICE_REALTIME_IN_TEXT ?? "4"),
-  outText: Number(process.env.PRICE_REALTIME_OUT_TEXT ?? "16"),
-  inAudio: Number(process.env.PRICE_REALTIME_IN_AUDIO ?? "32"),
-  outAudio: Number(process.env.PRICE_REALTIME_OUT_AUDIO ?? "64"),
-  cachedIn: Number(process.env.PRICE_REALTIME_CACHED_IN ?? "0.4"),
+  inText: Number(process.env.PRICE_REALTIME_IN_TEXT ?? "0.6"),
+  outText: Number(process.env.PRICE_REALTIME_OUT_TEXT ?? "2.4"),
+  inAudio: Number(process.env.PRICE_REALTIME_IN_AUDIO ?? "10"),
+  outAudio: Number(process.env.PRICE_REALTIME_OUT_AUDIO ?? "20"),
+  cachedIn: Number(process.env.PRICE_REALTIME_CACHED_IN ?? "0.3"),
 };
 
 type UsageDetails = {

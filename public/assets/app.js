@@ -227,8 +227,8 @@ async function connect() {
   await pc.setLocalDescription(offer);
 
   const baseUrl = "https://api.openai.com/v1/realtime";
-  const model = "gpt-realtime";
-  const sdpRes = await fetch(`${baseUrl}/calls?model=${model}`, {
+  const model = token.model || "gpt-4o-mini-realtime-preview";
+  const sdpRes = await fetch(`${baseUrl}/calls?model=${encodeURIComponent(model)}`, {
     method: "POST",
     body: offer.sdp,
     headers: {

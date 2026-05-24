@@ -78,7 +78,10 @@ export async function generateImage(prompt: string): Promise<Uint8Array> {
       prompt,
       n: 1,
       size: "1024x1024",
-      quality: process.env.IMAGE_QUALITY || "medium",
+      // low ($0.011) carries the new magical prompt well enough. Bump to
+      // medium ($0.042) per-deploy via IMAGE_QUALITY=medium if Anežka wants
+      // crisper detail on a particular run.
+      quality: process.env.IMAGE_QUALITY || "low",
     }),
     retries: 1,
     timeoutMs: 90_000,

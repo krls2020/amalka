@@ -84,8 +84,8 @@ r.post("/api/image/generate", async (c) => {
     medium: 0.042,
     high: 0.167,
   };
-  const q = (process.env.IMAGE_QUALITY || "medium").toLowerCase();
-  await recordUsageUsd(qualityCost[q] ?? 0.042);
+  const q = (process.env.IMAGE_QUALITY || "low").toLowerCase();
+  await recordUsageUsd(qualityCost[q] ?? 0.011);
 
   return c.json({
     ok: true,
