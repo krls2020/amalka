@@ -104,7 +104,13 @@
     color:#5C8FA8;letter-spacing:.04em;opacity:.85;
   }
   .amalka.shrink{transform:translate(34vw,32vh) scale(.34);transition:transform .7s cubic-bezier(.4,0,.2,1)}
-  .amalka{transition:transform .7s cubic-bezier(.4,0,.2,1)}
+  .amalka{transition:transform .7s cubic-bezier(.4,0,.2,1),opacity .35s ease,filter .35s ease}
+  /* Paused state — dim and desaturate so a non-reading 6yo can tell at a
+     glance that Amálka is "asleep" and waiting for another tap. */
+  .amalka.paused{opacity:.45;filter:grayscale(.55) brightness(1.05)}
+  .amalka.paused .head{animation-duration:7s}
+  .amalka.paused .antenna{animation-duration:7s}
+  .ring.paused{animation:none;border-color:#C9C9D4;opacity:.25}
   @keyframes shimmer{0%{background-position:0% 0%}100%{background-position:300% 0%}}
 </style>
 </head>

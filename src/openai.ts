@@ -138,8 +138,11 @@ export async function generateImage(prompt: string): Promise<GeneratedImage> {
   const res = await openaiFetch("/images/generations", {
     method: "POST",
     body: JSON.stringify(body),
-    retries: 1,
-    timeoutMs: 90_000,
+    // No retries: /images/generations is non-idempotent and paid. A retry on
+    // a slow (sometimes 60-120s) generation can double-charge if the first
+    // call completes server-side after we already gave up. Fail fast instead.
+    retries: 0,
+    timeoutMs: 120_000,
   });
   const data = (await res.json()) as { data: Array<{ b64_json: string }> };
   const b64 = data.data?.[0]?.b64_json;

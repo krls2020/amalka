@@ -30,8 +30,19 @@ let activeImageTimer = null;
 let greetingStarted = false;
 let micUnlocked = false;
 let sessionExpiryTimer = null;
+let softWarnTimer = null;
+let iceGraceTimer = null;
 let cumulativeUsage = null;
 let lastSpeechStartedAt = 0;
+// Bumped on every connect(); async callbacks (image gen, timers) capture the
+// era and bail if it changed, so stale state from a prior session never leaks
+// into a fresh one (e.g. old image showing up after a reconnect).
+let sessionEra = 0;
+// Function-call args buffered between response.function_call_arguments.done
+// and response.done. We only execute when the response actually completes —
+// otherwise a cancelled/interrupted call could still trigger image gen.
+const pendingToolCalls = new Map();
+const IMAGE_OVERLAY_MS = 90_000;
 
 function setStatus(text) {
   statusEl.textContent = text;
@@ -56,7 +67,7 @@ function showImage(url) {
     imgOverlay.classList.add("show");
   };
   clearTimeout(activeImageTimer);
-  activeImageTimer = setTimeout(() => hideImage(), 45000);
+  activeImageTimer = setTimeout(() => hideImage(), IMAGE_OVERLAY_MS);
 }
 function hideImage() {
   imgOverlay.classList.remove("show", "placeholder");
@@ -79,8 +90,19 @@ scheduleBlink();
 
 function disconnect(reason) {
   if (reason) console.log("[Amálka] disconnect:", reason);
+  // Invalidate any in-flight async work captured under the old era.
+  sessionEra++;
+  pendingToolCalls.clear();
   clearTimeout(sessionExpiryTimer);
   sessionExpiryTimer = null;
+  clearTimeout(softWarnTimer);
+  softWarnTimer = null;
+  clearTimeout(iceGraceTimer);
+  iceGraceTimer = null;
+  clearTimeout(activeImageTimer);
+  activeImageTimer = null;
+  hideImage();
+  amalkaEl?.classList.remove("paused");
   cancelAnimationFrame(rafId);
   cancelAnimationFrame(inRafId);
   rafId = null;
@@ -222,6 +244,16 @@ async function connect() {
   pc.ontrack = (e) => {
     audioEl.srcObject = e.streams[0];
     setupOutputAnalyser(e.streams[0]);
+    // iOS Safari sometimes blocks autoplay even with `playsinline`; if play()
+    // rejects, surface a clear "klepni znovu" instead of silently showing
+    // "mluvím" with no audio.
+    const p = audioEl.play();
+    if (p && typeof p.catch === "function") {
+      p.catch((err) => {
+        console.warn("[Amálka] audio play blocked", err);
+        setStatus("klepni znovu, prosím");
+      });
+    }
   };
   setupInputAnalyser(mediaStream);
 
@@ -246,9 +278,24 @@ async function connect() {
   pc.oniceconnectionstatechange = () => {
     if (!pc) return;
     const s = pc.iceConnectionState;
-    if (s === "failed" || s === "closed" || s === "disconnected") {
+    if (s === "failed" || s === "closed") {
       setStatus("ztratila jsem signál, klikni znovu");
       disconnect(`ice=${s}`);
+    } else if (s === "disconnected") {
+      // Brief network handoffs (Wi-Fi → cellular, walking through a hallway)
+      // routinely flap ICE through "disconnected" for 1-3 s. Tearing down
+      // immediately means Anežka loses Amálka every time. Give it a grace
+      // window; tear down only if still disconnected after.
+      clearTimeout(iceGraceTimer);
+      iceGraceTimer = setTimeout(() => {
+        if (pc && pc.iceConnectionState === "disconnected") {
+          setStatus("ztratila jsem signál, klikni znovu");
+          disconnect("ice=disconnected_grace");
+        }
+      }, 8000);
+    } else if (s === "connected" || s === "completed") {
+      clearTimeout(iceGraceTimer);
+      iceGraceTimer = null;
     }
   };
 
@@ -285,6 +332,15 @@ async function connect() {
     setStatus("amálka si odpočine, klikni znovu");
     disconnect("expiry");
   }, expiryMs);
+  // Soft pre-warning at ~85% of session. Anežka doesn't read, but the parent
+  // can pick it up, and the status change is a cue she's getting close to a
+  // natural ending. Skip if total session is too short for the warning to
+  // be useful (< 2 min total).
+  if (expiryMs > 120_000) {
+    softWarnTimer = setTimeout(() => {
+      setStatus("za chvilku si dáme pauzu, abych si oddychla");
+    }, Math.max(30_000, expiryMs * 0.85));
+  }
   isConnecting = false;
   } catch (e) {
     console.error("connect failed", e);
@@ -432,6 +488,9 @@ function handleToolCall(call) {
 
   showImagePlaceholder();
 
+  // Capture the era this call belongs to; image gen can take 60-120s and the
+  // child may have already disconnected/reconnected by the time it resolves.
+  const era = sessionEra;
   fetch("/api/image/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -443,6 +502,7 @@ function handleToolCall(call) {
   })
     .then((r) => r.json())
     .then((out) => {
+      if (era !== sessionEra) return; // stale: a new session is active
       if (out.ok && out.url) {
         showImage(out.url);
       } else {
@@ -451,6 +511,7 @@ function handleToolCall(call) {
       }
     })
     .catch((e) => {
+      if (era !== sessionEra) return;
       console.error("image generate failed", e);
       hideImage();
     });
@@ -535,6 +596,9 @@ function handleEvent(ev) {
     setStatus("poslouchám tě");
   } else if (ev.type === "input_audio_buffer.speech_stopped") {
     setStatus("přemýšlím");
+  } else if (ev.type === "response.created") {
+    // OpenAI started generating — earliest signal that Amálka is "thinking".
+    setStatus("přemýšlím");
   } else if (
     ev.type === "response.audio.delta" ||
     ev.type === "response.output_audio.delta"
@@ -542,21 +606,49 @@ function handleEvent(ev) {
     greetingStarted = true;
     setStatus("mluvím");
   } else if (ev.type === "response.function_call_arguments.done") {
-    handleToolCall({
-      call_id: ev.call_id,
-      name: ev.name,
-      arguments: ev.arguments,
-    });
+    // Buffer the call — only execute when response.done confirms it completed.
+    // response.function_call_arguments.done can also fire when a response is
+    // cancelled or interrupted; firing the tool eagerly here causes phantom
+    // image generations.
+    if (ev.call_id) {
+      pendingToolCalls.set(ev.call_id, {
+        name: ev.name,
+        arguments: ev.arguments,
+      });
+    }
   } else if (
     ev.type === "response.done" ||
     ev.type === "response.completed"
   ) {
+    const status = ev.response?.status ?? "completed";
+    const outputs = ev.response?.output ?? [];
+    if (status === "completed") {
+      for (const item of outputs) {
+        if (item?.type !== "function_call") continue;
+        if (item.status && item.status !== "completed") continue;
+        const buffered = pendingToolCalls.get(item.call_id);
+        pendingToolCalls.delete(item.call_id);
+        handleToolCall({
+          call_id: item.call_id,
+          name: item.name || buffered?.name,
+          arguments: item.arguments || buffered?.arguments,
+        });
+      }
+    }
+    // Drop anything left orphaned (response cancelled / failed).
+    if (status !== "completed") pendingToolCalls.clear();
     setStatus("povídej!");
     const usage = ev.response?.usage ?? ev.usage;
     if (usage) {
       accumulateUsage(usage);
       reportUsage(usage);
     }
+  } else if (
+    ev.type === "response.output_audio.done" ||
+    ev.type === "response.audio.done"
+  ) {
+    // Amálka finished her turn — flip mouth/status back from "mluvím".
+    setStatus("povídej!");
   } else if (ev.type === "error") {
     console.error("Realtime error", ev);
     setStatus("něco se pokazilo");
@@ -567,7 +659,26 @@ async function togglePause() {
   if (!mediaStream) return;
   isPaused = !isPaused;
   for (const t of mediaStream.getAudioTracks()) t.enabled = !isPaused;
-  setStatus(isPaused ? "amálka spinká, klikni" : "povídej!");
+  if (isPaused) {
+    // Stop Amálka mid-sentence: cancel any active response and drop her
+    // queued audio. Without this, pause just mutes the kid — Amálka keeps
+    // talking, which is exactly NOT what "pause" means to a 6yo.
+    try {
+      dataCh?.send(JSON.stringify({ type: "response.cancel" }));
+      dataCh?.send(JSON.stringify({ type: "output_audio_buffer.clear" }));
+    } catch {}
+    amalkaEl?.classList.add("paused");
+    head?.classList.remove("speaking");
+    setStatus("amálka spinká, klepni");
+  } else {
+    // Resume — flush any input that piled up while paused so we don't
+    // process old audio as the next turn.
+    try {
+      dataCh?.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
+    } catch {}
+    amalkaEl?.classList.remove("paused");
+    setStatus("povídej!");
+  }
 }
 
 async function onMicTap() {
