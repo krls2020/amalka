@@ -179,10 +179,15 @@ async function connect() {
 
   pc = new RTCPeerConnection();
   for (const track of mediaStream.getAudioTracks()) {
-    track.enabled = false;
+    // Do NOT disable the track here. iOS Safari has a known WebRTC bug where
+    // re-enabling a track outside a user gesture leaves the sender silent
+    // even though track.enabled reads `true` — the symptom is "Amálka
+    // greets but never hears me until I press pause+play". The greeting is
+    // protected on the server side via input_audio_buffer.clear sent right
+    // before response.create (below).
     pc.addTrack(track, mediaStream);
   }
-  micUnlocked = false;
+  micUnlocked = true;
   greetingStarted = false;
 
   const audioEl = $("amalkaAudio");
@@ -195,8 +200,11 @@ async function connect() {
   dataCh = pc.createDataChannel("oai-events");
   dataCh.onopen = () => {
     setStatus("amálka začíná…");
-    // Persona's ZAČÁTEK rule fires the greeting; no need to override here.
     try {
+      // Flush any audio buffered between datachannel open and response start,
+      // so ambient noise doesn't accidentally interrupt the greeting via VAD.
+      dataCh.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
+      // Persona's ZAČÁTEK rule produces the greeting.
       dataCh.send(JSON.stringify({ type: "response.create" }));
     } catch (e) {
       console.warn("initial response.create failed", e);
@@ -422,13 +430,9 @@ function sendToolAck(callId, output) {
   dataCh.send(JSON.stringify({ type: "response.create" }));
 }
 
-function unlockMic() {
-  if (micUnlocked) return;
-  micUnlocked = true;
-  if (!mediaStream) return;
-  for (const t of mediaStream.getAudioTracks()) t.enabled = !isPaused;
-  console.log("[Amálka] mic unlocked");
-}
+// Legacy no-op: kept so we don't accidentally re-introduce iOS WebRTC track
+// disable/enable issues. Mic stays live from connection start.
+function unlockMic() {}
 
 function accumulateUsage(usage) {
   if (!usage || typeof usage !== "object") return;
@@ -494,10 +498,7 @@ function handleEvent(ev) {
     ev.type === "response.audio.delta" ||
     ev.type === "response.output_audio.delta"
   ) {
-    if (!greetingStarted) {
-      greetingStarted = true;
-      setTimeout(unlockMic, 600);
-    }
+    greetingStarted = true;
     setStatus("mluvím");
   } else if (ev.type === "response.function_call_arguments.done") {
     handleToolCall({
