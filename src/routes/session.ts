@@ -51,15 +51,15 @@ r.post("/api/realtime/session", async (c) => {
     const nonce = await issueNonce(MAX_IMAGES_PER_SESSION);
     const sessionId = secret.session?.id ?? null;
     const usageKey = sessionId ? await issueUsageKey(sessionId) : null;
+    // Realtime WebRTC sessions can run up to ~60 min; the client_secret
+    // is only needed for the initial SDP handshake. Don't cap the
+    // session at token TTL — that's what was hard-cutting Anežka at 9.5 min
+    // mid-story. Cap only at the configured MAX_SESSION_MINUTES (default 30).
     const configuredMaxSeconds = Math.max(
       60,
-      Number(process.env.MAX_SESSION_MINUTES ?? "9") * 60,
+      Number(process.env.MAX_SESSION_MINUTES ?? "30") * 60,
     );
-    const tokenSeconds = Math.max(
-      60,
-      secret.expires_at - Math.floor(Date.now() / 1000) - CLIENT_SECRET_SAFETY_SECONDS,
-    );
-    const maxSessionSeconds = Math.min(configuredMaxSeconds, tokenSeconds);
+    const maxSessionSeconds = configuredMaxSeconds;
     log.info(`session issued sessionId=${sessionId} ip=${ip} model=${REALTIME_MODEL}`);
     return c.json({
       ok: true,

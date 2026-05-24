@@ -323,11 +323,13 @@ async function connect() {
   await pc.setRemoteDescription(answer);
   setState("on");
 
-  // Tear down before the short-lived client secret expires, so the child
-  // sees a friendly pause instead of a hard WebRTC failure.
-  const tokenExpiryMs = Number(token.expiresAt ?? 0) * 1000 - Date.now() - 30_000;
-  const configuredMs = Number(token.maxSessionSeconds ?? 9 * 60) * 1000;
-  const expiryMs = Math.max(60_000, Math.min(configuredMs, tokenExpiryMs));
+  // Realtime WebRTC sessions can run for ~60 min — client_secret expiry
+  // (typically 10 min) only blocks RE-handshake, not the live call. So
+  // the app timer is bounded ONLY by the server's configured
+  // MAX_SESSION_MINUTES, not by client_secret TTL. Capping by token
+  // expiry was hard-cutting Anežka at ~9 min mid-story.
+  const configuredMs = Number(token.maxSessionSeconds ?? 30 * 60) * 1000;
+  const expiryMs = Math.max(60_000, configuredMs);
   sessionExpiryTimer = setTimeout(() => {
     setStatus("amálka si odpočine, klikni znovu");
     disconnect("expiry");
