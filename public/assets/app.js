@@ -21,8 +21,11 @@ let inSmoothed = 0;
 let inPeak = 0;
 let inSpeakingSince = 0;
 let sessionId = null;
+let usageKey = null;
 let nonce = null;
 let isPaused = false;
+let isConnecting = false;
+let lastTapAt = 0;
 let activeImageTimer = null;
 let greetingStarted = false;
 let micUnlocked = false;
@@ -91,9 +94,7 @@ function disconnect(reason) {
     pc = null;
   }
   if (mediaStream) {
-    for (const t of mediaStream.getTracks()) {
-      try { t.stop(); } catch {}
-    }
+    stopMediaStream(mediaStream);
     mediaStream = null;
   }
   if (audioCtx) {
@@ -113,70 +114,97 @@ function disconnect(reason) {
   if (ringEl) ringEl.style.removeProperty("--lvl");
   // Flush final usage if we have any.
   sendUsageBeacon();
+  sessionId = null;
+  usageKey = null;
+  nonce = null;
+  isConnecting = false;
   setState("off");
 }
 
+function stopMediaStream(stream) {
+  for (const t of stream.getTracks()) {
+    try { t.stop(); } catch {}
+  }
+}
+
+async function fetchSessionToken() {
+  const r = await fetch("/api/realtime/session", { method: "POST" });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    const reason = err.reason || "unavailable";
+    const e = new Error(reason);
+    e.reason = reason;
+    throw e;
+  }
+  return r.json();
+}
+
+async function getMicStream() {
+  // Constraints tuned for a 6yo child voice + speakerphone playback:
+  // - echoCancellation: ON — assistant audio plays through device speaker.
+  // - noiseSuppression: OFF — Chrome's NS gates soft Czech consonants (š/ř/ž)
+  //   and is the most common cause of "she spoke and Amálka didn't hear".
+  // - autoGainControl: ON — child voice is 10–20 dB quieter than adult;
+  //   AGC brings level above OpenAI's energy-based VAD threshold. On iOS,
+  //   AGC is also bundled with AEC — disabling it breaks echo cancellation.
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      echoCancellation: { ideal: true },
+      noiseSuppression: { ideal: false },
+      autoGainControl: { ideal: true },
+      channelCount: { ideal: 1 },
+      sampleRate: { ideal: 48000 },
+      sampleSize: { ideal: 16 },
+    },
+  });
+  const settings = stream.getAudioTracks()[0]?.getSettings?.() ?? {};
+  console.log("[Amálka] mic settings", JSON.stringify({
+    ec: settings.echoCancellation,
+    ns: settings.noiseSuppression,
+    agc: settings.autoGainControl,
+    sr: settings.sampleRate,
+    ch: settings.channelCount,
+    dev: settings.deviceId ? "ok" : "?",
+  }));
+  return stream;
+}
+
+function statusForSessionError(reason) {
+  if (reason === "budget_exceeded") return "amálka má dnes pauzu, zkus to zítra";
+  if (reason === "rate_limited") return "amálka odpočívá, počkej chvilku";
+  return "amálka má potíže, zkus to znovu";
+}
+
 async function connect() {
+  if (isConnecting || pc) return;
+  isConnecting = true;
   setState("loading");
   setStatus("propojuji se s amálkou…");
-  let token;
-  try {
-    const r = await fetch("/api/realtime/session", { method: "POST" });
-    if (!r.ok) {
-      const err = await r.json().catch(() => ({}));
-      if (err.reason === "budget_exceeded") {
-        setStatus("amálka má dnes pauzu, zkus to zítra");
-      } else if (err.reason === "rate_limited") {
-        setStatus("amálka odpočívá, počkej chvilku");
-      } else {
-        setStatus("amálka má potíže, zkus to znovu");
-      }
-      setState("off");
-      return;
+
+  const tokenTask = fetchSessionToken();
+  const micTask = getMicStream();
+  const [tokenResult, micResult] = await Promise.allSettled([tokenTask, micTask]);
+
+  if (tokenResult.status === "rejected" || micResult.status === "rejected") {
+    if (micResult.status === "fulfilled") stopMediaStream(micResult.value);
+    setState("off");
+    isConnecting = false;
+    if (micResult.status === "rejected") {
+      setStatus("povol mikrofon, prosím");
+    } else {
+      setStatus(statusForSessionError(tokenResult.reason?.reason));
     }
-    token = await r.json();
-    sessionId = token.sessionId;
-    nonce = token.nonce;
-    cumulativeUsage = null;
-  } catch (e) {
-    setStatus("nepodařilo se spojit");
-    setState("off");
     return;
   }
+
+  const token = tokenResult.value;
+  sessionId = token.sessionId;
+  usageKey = token.usageKey;
+  nonce = token.nonce;
+  cumulativeUsage = null;
+  mediaStream = micResult.value;
 
   try {
-    // Constraints tuned for a 6yo child voice + speakerphone playback:
-    // - echoCancellation: ON — assistant audio plays through device speaker.
-    // - noiseSuppression: OFF — Chrome's NS gates soft Czech consonants (š/ř/ž)
-    //   and is the most common cause of "she spoke and Amálka didn't hear".
-    // - autoGainControl: ON — child voice is 10–20 dB quieter than adult;
-    //   AGC brings level above OpenAI's energy-based VAD threshold. On iOS,
-    //   AGC is also bundled with AEC — disabling it breaks echo cancellation.
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: { ideal: true },
-        noiseSuppression: { ideal: false },
-        autoGainControl: { ideal: true },
-        channelCount: { ideal: 1 },
-        sampleRate: { ideal: 48000 },
-        sampleSize: { ideal: 16 },
-      },
-    });
-    const settings = mediaStream.getAudioTracks()[0]?.getSettings?.() ?? {};
-    console.log("[Amálka] mic settings", JSON.stringify({
-      ec: settings.echoCancellation,
-      ns: settings.noiseSuppression,
-      agc: settings.autoGainControl,
-      sr: settings.sampleRate,
-      ch: settings.channelCount,
-      dev: settings.deviceId ? "ok" : "?",
-    }));
-  } catch (e) {
-    setStatus("povol mikrofon, prosím");
-    setState("off");
-    return;
-  }
-
   pc = new RTCPeerConnection();
   for (const track of mediaStream.getAudioTracks()) {
     // Do NOT disable the track here. iOS Safari has a known WebRTC bug where
@@ -248,14 +276,21 @@ async function connect() {
   await pc.setRemoteDescription(answer);
   setState("on");
 
-  // Watchdog: client secret expires after 600s on OpenAI side. Tear down
-  // gracefully ~30s before, so the child doesn't experience a hard cutoff.
-  const maxMin = Number(token.maxSessionMinutes ?? 30);
-  const expiryMs = Math.min(maxMin * 60_000, 9 * 60_000 + 30_000);
+  // Tear down before the short-lived client secret expires, so the child
+  // sees a friendly pause instead of a hard WebRTC failure.
+  const tokenExpiryMs = Number(token.expiresAt ?? 0) * 1000 - Date.now() - 30_000;
+  const configuredMs = Number(token.maxSessionSeconds ?? 9 * 60) * 1000;
+  const expiryMs = Math.max(60_000, Math.min(configuredMs, tokenExpiryMs));
   sessionExpiryTimer = setTimeout(() => {
     setStatus("amálka si odpočine, klikni znovu");
     disconnect("expiry");
   }, expiryMs);
+  isConnecting = false;
+  } catch (e) {
+    console.error("connect failed", e);
+    setStatus("amálka se neozvala");
+    disconnect("connect_failed");
+  }
 }
 
 function ensureAudioCtx() {
@@ -373,6 +408,12 @@ function handleToolCall(call) {
   const callId = call.call_id;
   if (!callId || !markHandled(callId)) return;
 
+  if (call.name === "wait_for_user") {
+    sendToolAck(callId, { success: true }, false);
+    setStatus("povídej!");
+    return;
+  }
+
   if (call.name !== "nakresli_obrazek") {
     sendToolAck(callId, { success: false, message: "Neznámý nástroj." });
     return;
@@ -415,7 +456,7 @@ function handleToolCall(call) {
     });
 }
 
-function sendToolAck(callId, output) {
+function sendToolAck(callId, output, createResponse = true) {
   if (!dataCh || dataCh.readyState !== "open") return;
   dataCh.send(
     JSON.stringify({
@@ -427,7 +468,7 @@ function sendToolAck(callId, output) {
       },
     }),
   );
-  dataCh.send(JSON.stringify({ type: "response.create" }));
+  if (createResponse) dataCh.send(JSON.stringify({ type: "response.create" }));
 }
 
 // Legacy no-op: kept so we don't accidentally re-introduce iOS WebRTC track
@@ -462,7 +503,7 @@ function reportUsage(usage) {
   fetch("/api/session/usage", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sessionId, ...usage }),
+    body: JSON.stringify({ sessionId, usageKey, ...usage }),
   })
     .then((r) => r.json())
     .then((out) => {
@@ -480,7 +521,7 @@ function sendUsageBeacon() {
     navigator.sendBeacon(
       "/api/session/end",
       new Blob(
-        [JSON.stringify({ sessionId, ...cumulativeUsage })],
+        [JSON.stringify({ sessionId, usageKey, ...cumulativeUsage })],
         { type: "application/json" },
       ),
     );
@@ -530,12 +571,16 @@ async function togglePause() {
 }
 
 async function onMicTap() {
+  const now = Date.now();
+  if (now - lastTapAt < 450) return;
+  lastTapAt = now;
   console.log("[Amálka] mic tap, pc?", !!pc);
   setStatus("...");
-  if (!pc) {
+  if (!pc && !isConnecting) {
     await connect();
     return;
   }
+  if (isConnecting) return;
   await togglePause();
 }
 

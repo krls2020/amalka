@@ -1,8 +1,8 @@
 import { Hono } from "hono";
-import { generateImage, buildImagePrompt } from "../openai.ts";
+import { generateImage, buildImagePrompt, estimateImageUsd } from "../openai.ts";
 import { cacheGet, cacheSet, putImage, getImageBytes } from "../storage.ts";
 import { consumeNonce } from "../lib/nonces.ts";
-import { rateLimit, recordUsageUsd } from "../lib/ratelimit.ts";
+import { dailyBudgetCheck, rateLimit, recordUsageUsd } from "../lib/ratelimit.ts";
 import { log } from "../lib/redact.ts";
 
 const r = new Hono();
@@ -21,13 +21,28 @@ function normalize(s: string): string {
     .trim();
 }
 
+function imageVariant(): string {
+  return [
+    process.env.IMAGE_MODEL || "gpt-image-2",
+    process.env.IMAGE_SIZE || "1024x1024",
+    process.env.IMAGE_QUALITY || "low",
+    process.env.IMAGE_FORMAT || "jpeg",
+  ].join("|");
+}
+
+function contentTypeForName(name: string): string {
+  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
+  if (name.endsWith(".webp")) return "image/webp";
+  return "image/png";
+}
+
 r.post("/api/image/generate", async (c) => {
   const ip =
     c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ??
     c.req.header("x-real-ip") ??
     "unknown";
 
-  const rl = await rateLimit("image", ip, 30, 60);
+  const rl = await rateLimit("image", ip, 8, 60);
   if (!rl.allowed) {
     return c.json({ ok: false, reason: "rate_limited" }, 429);
   }
@@ -52,25 +67,37 @@ r.post("/api/image/generate", async (c) => {
     return c.json({ ok: false, reason: "invalid_nonce" }, 403);
   }
 
-  const cacheKey = `imghash:v1:${hashKey(normalize(popis) + "|" + nalada)}`;
+  const cacheKey = `imghash:v2:${hashKey(imageVariant() + "|" + normalize(popis) + "|" + nalada)}`;
   const cached = await cacheGet(cacheKey);
   if (cached) {
     log.info(`image cache HIT key=${cacheKey}`);
     return c.json({ ok: true, url: `/api/image/${cached}`, cached: true });
   }
 
+  const estimatedUsd = estimateImageUsd();
+  const budget = await dailyBudgetCheck(estimatedUsd);
+  if (!budget.allowed) {
+    log.warn(
+      `Image budget blocked: ${budget.usd.toFixed(3)} + ${estimatedUsd.toFixed(3)}/${budget.cap}`,
+    );
+    return c.json(
+      { ok: false, reason: "budget_exceeded", usd: budget.usd, cap: budget.cap },
+      429,
+    );
+  }
+
   log.info(`image cache MISS key=${cacheKey} popis="${popis.slice(0, 60)}"`);
-  let bytes: Uint8Array;
+  let image;
   try {
-    bytes = await generateImage(buildImagePrompt(popis, nalada));
+    image = await generateImage(buildImagePrompt(popis, nalada));
   } catch (e) {
     log.error("generateImage failed", String(e));
     return c.json({ ok: false, reason: "image_failed" }, 502);
   }
 
-  const objectName = `${cacheKey.slice("imghash:v1:".length)}.png`;
+  const objectName = `${cacheKey.slice("imghash:v2:".length)}.${image.extension}`;
   try {
-    await putImage(objectName, bytes);
+    await putImage(objectName, image.bytes, image.contentType);
   } catch (e) {
     log.error("putImage failed", String(e));
     return c.json({ ok: false, reason: "storage_failed" }, 500);
@@ -78,34 +105,32 @@ r.post("/api/image/generate", async (c) => {
 
   // 60 days — long enough for repeated story themes, short enough to bound S3 growth.
   await cacheSet(cacheKey, objectName, 60 * 60 * 24 * 60);
-  // gpt-image-1 1024x1024: low ~$0.011, medium ~$0.042, high ~$0.167.
-  const qualityCost: Record<string, number> = {
-    low: 0.011,
-    medium: 0.042,
-    high: 0.167,
-  };
-  const q = (process.env.IMAGE_QUALITY || "low").toLowerCase();
-  await recordUsageUsd(qualityCost[q] ?? 0.011);
+  await recordUsageUsd(image.estimatedUsd);
 
   return c.json({
     ok: true,
     url: `/api/image/${objectName}`,
     cached: false,
+    model: image.model,
   });
 });
 
 r.get("/api/image/:name", async (c) => {
   const name = c.req.param("name");
-  if (!/^[a-f0-9]{32,}\.png$/.test(name)) {
+  if (!/^[a-f0-9]{32,}\.(png|jpe?g|webp)$/.test(name)) {
     return c.json({ ok: false }, 400);
   }
   const bytes = await getImageBytes(name);
   if (!bytes) {
     return c.json({ ok: false, reason: "not_found" }, 404);
   }
-  return new Response(bytes, {
+  const body = (bytes.buffer as ArrayBuffer).slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  );
+  return new Response(body, {
     headers: {
-      "Content-Type": "image/png",
+      "Content-Type": contentTypeForName(name),
       "Cache-Control": "public, max-age=31536000, immutable",
     },
   });

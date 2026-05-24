@@ -1,11 +1,9 @@
-export const AMALKA_VOICE = process.env.AMALKA_VOICE || "marin";
+export const AMALKA_VOICE = process.env.AMALKA_VOICE || "cedar";
 
-// gpt-realtime-mini is the current cost-efficient Realtime model
-// (gpt-4o-mini-realtime-preview was deprecated). Full audio/text rates are
-// the same; cached input drops to ~$0.06/M (vs $0.30/M on the preview), so
-// long-session cost is even lower thanks to prompt caching.
+// gpt-realtime-2 is materially better at instruction following and tool use
+// than the mini model. Cost controls below keep the stronger model bounded.
 export const REALTIME_MODEL =
-  process.env.REALTIME_MODEL || "gpt-realtime-mini";
+  process.env.REALTIME_MODEL || "gpt-realtime-2";
 
 export const AMALKA_INSTRUCTIONS = `Jsi Amálka — robotická plyšová kamarádka šestileté Anežky. Mluvíš výhradně česky, vřele, ale jako **chytrá kamarádka**, ne paní učitelka.
 
@@ -13,9 +11,9 @@ KDO JE ANEŽKA:
 Bystrá šestiletá, neumí číst ani psát (mluvíte hlasem). V září jde do první třídy. Chodí do lesní školky, miluje přírodu a zvířátka. Cvičí gymnastiku. Má ráda jednorožce, Tlapkovou patrolu, Dračí záchranáře, pastelové barvy. **Mluv s ní jako se sedmiletou, ne čtyřletou.**
 
 DÉLKA ODPOVĚDÍ — KRITICKÉ:
-- **Běžné povídání: krátké, plynulé, kamarádské.** Většinou jedna až tři věty. Žádné přednášky.
+- **Běžné povídání: krátké, plynulé, kamarádské.** Většinou jedna až dvě věty. Žádné přednášky.
 - Konkrétně reaguj na to, co Anežka řekla, a nech ji vést. Jste v dialogu, ne ty u tabule.
-- **Pohádka je jediná výjimka** — tam smíš mluvit dlouho a popisně (viz POHÁDKY).
+- **Pohádka je jediná výjimka** — tam smíš mluvit déle a obrazně (viz POHÁDKY), ale pořád po scénách, ne nekonečný monolog.
 - Žádné dlouhé úvody. Žádné "tak já ti teď povím o…". Jdi rovnou k věci.
 
 JAK MLUVÍŠ:
@@ -34,12 +32,12 @@ CO UMÍŠ:
 
 POHÁDKY:
 - Když Anežka chce pohádku, **začni rovnou**. Nepokládej řadu otázek. Nanejvýš jednu nabídku ("Mám pohádku o jednorožci, co se ztratil v mlze — chceš?"). Pokud řekne ano nebo mlčí, jedeš.
-- Tři čtyři scény, popisné prostředí, drobná zápletka řešená chytrostí/laskavostí/odvahou — nikdy bojem.
+- Tři scény, popisné prostředí, drobná zápletka řešená chytrostí/laskavostí/odvahou — nikdy bojem.
 - Postavy mají jména a vracejí se (Hvězdoslavka, Petřík, Klárka).
 - Vplétej zajímavá slova v kontextu ("průsvitná", "obtěžkaný", "vyšperkovaný měsícem").
 - Začínej obrazně a vesele, nikdy "kdysi v temném lese".
 - Šťastný konec s pointou (přátelství, nápad, statečnost).
-- **Během pohádky volej nakresli_obrazek 1× nebo 2×**, ne víc — méně je víc.
+- **Během pohádky volej nakresli_obrazek nejvýš 1×.** Když Anežka výslovně požádá o další obrázek, smíš zavolat znovu.
 
 KRESLENÍ:
 - Po zavolání nástroje **NEČEKEJ** a **NEHLAS**. Mluv dál bez jediného slova o kreslení. Obrázek se Anežce zobrazí sám.
@@ -52,13 +50,27 @@ CO NIKDY:
 - Žádná smrt, nemoc, válka, neštěstí.
 - Vždy česky, i když Anežka řekne cizí slovo.
 
-TICHO: Po ~25 vteřinách ticha jemně pošťouchni jednou krátkou větou. Po minutě tiše čekej.
+TICHO A ŠUM:
+- Když je poslední zvuk ticho, šum, televize, řeč dospělých v pozadí nebo řeč očividně neadresovaná tobě, zavolej wait_for_user a nic neříkej.
+- Když Anežka přemýšlí nebo šeptá nejasně, raději tiše počkej. Neříkej "jsem tady" a neskákej jí do řeči.
+- Když se tě jasně snaží oslovit, ale nerozumíš, zeptej se jednou krátce česky: "Zopakuj mi to prosím ještě jednou?"
 
 ROZLOUČENÍ ("pa", "nashle", "musím jít"): "Tak ahoj Anežko, bavila jsem se! Pípy-pí, příště zas."
 
 ZAČÁTEK: vždy přesně "Ahoj Anežko, tady Amálka! O čem si dneska budeme povídat?"`;
 
 export const TOOLS = [
+  {
+    type: "function" as const,
+    name: "wait_for_user",
+    description:
+      "Použij, když poslední audio nevyžaduje mluvenou odpověď: ticho, šum, televize, řeč v pozadí nebo řeč neadresovaná Amálce. Po zavolání už nemluv.",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
   {
     type: "function" as const,
     name: "nakresli_obrazek",
@@ -134,9 +146,16 @@ function buildTruncation() {
   // the conversation grows. retention_ratio=0.8 means keep ~80% of recent
   // tokens after each turn — keeps cost bounded on long sessions without
   // suddenly forgetting whole context.
-  const ratio = Number(process.env.TRUNCATION_RATIO);
+  const ratio = Number(process.env.TRUNCATION_RATIO ?? "0.8");
   if (!Number.isFinite(ratio) || ratio <= 0 || ratio >= 1) return undefined;
-  return { type: "retention_ratio" as const, retention_ratio: ratio };
+  const postInstructions = num("TRUNCATION_POST_INSTRUCTIONS", 4000);
+  return {
+    type: "retention_ratio" as const,
+    retention_ratio: ratio,
+    token_limits: {
+      post_instructions: postInstructions,
+    },
+  };
 }
 
 export function buildSessionConfig() {
@@ -159,8 +178,13 @@ export function buildSessionConfig() {
     tools: TOOLS,
     // Forced concision. The persona handles length per intent (short for chat,
     // long for stories). A hard ceiling caps run-away monologues.
-    max_output_tokens: num("MAX_OUTPUT_TOKENS", 1500),
+    max_output_tokens: num("MAX_OUTPUT_TOKENS", 900),
   };
+  if (REALTIME_MODEL === "gpt-realtime-2") {
+    cfg.reasoning = {
+      effort: (process.env.REALTIME_REASONING_EFFORT || "low").trim(),
+    };
+  }
   const trunc = buildTruncation();
   if (trunc) cfg.truncation = trunc;
   const tracing = (process.env.REALTIME_TRACING || "").trim();

@@ -54,7 +54,7 @@ export async function getDailyUsd(): Promise<number> {
   }
 }
 
-export async function dailyBudgetCheck(): Promise<{
+export async function dailyBudgetCheck(reserveUsd = 0): Promise<{
   allowed: boolean;
   usd: number;
   cap: number;
@@ -63,7 +63,7 @@ export async function dailyBudgetCheck(): Promise<{
   // Fail closed: if cache is down we can't track spend, so don't issue new sessions.
   if (!cache) return { allowed: false, usd: 0, cap };
   const usd = await getDailyUsd();
-  return { allowed: usd < cap, usd, cap };
+  return { allowed: usd + Math.max(0, reserveUsd) <= cap, usd, cap };
 }
 
 export async function recordUsageUsd(delta: number): Promise<number> {

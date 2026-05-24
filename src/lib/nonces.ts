@@ -2,6 +2,7 @@ import { cache } from "../storage.ts";
 import { log } from "./redact.ts";
 
 const NONCE_TTL_SECONDS = 60 * 35;
+const USAGE_KEY_TTL_SECONDS = 60 * 12;
 
 export async function issueNonce(maxImages: number): Promise<string> {
   const nonce = crypto.randomUUID().replace(/-/g, "");
@@ -39,6 +40,37 @@ export async function consumeNonce(nonce: string): Promise<boolean> {
     return remaining >= 0;
   } catch (e) {
     log.warn("consumeNonce failed", String(e));
+    return false;
+  }
+}
+
+export async function issueUsageKey(sessionId: string): Promise<string> {
+  const key = crypto.randomUUID().replace(/-/g, "");
+  if (!cache || !sessionId) return key;
+  try {
+    await cache.send("SET", [
+      `usagekey:${key}`,
+      sessionId,
+      "EX",
+      String(USAGE_KEY_TTL_SECONDS),
+    ]);
+  } catch (e) {
+    log.warn("issueUsageKey failed", String(e));
+  }
+  return key;
+}
+
+export async function validateUsageKey(
+  sessionId: string | undefined,
+  key: string | undefined,
+): Promise<boolean> {
+  if (!cache) return false;
+  if (!sessionId || !key || !/^[a-f0-9]{32}$/i.test(key)) return false;
+  try {
+    const stored = await cache.send("GET", [`usagekey:${key}`]);
+    return stored === sessionId;
+  } catch (e) {
+    log.warn("validateUsageKey failed", String(e));
     return false;
   }
 }

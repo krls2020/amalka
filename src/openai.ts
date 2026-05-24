@@ -74,26 +74,86 @@ export async function issueClientSecret(
   return (await res.json()) as ClientSecretResponse;
 }
 
-export async function generateImage(prompt: string): Promise<Uint8Array> {
+const IMAGE_MODEL = process.env.IMAGE_MODEL || "gpt-image-2";
+const IMAGE_SIZE = process.env.IMAGE_SIZE || "1024x1024";
+const IMAGE_QUALITY = process.env.IMAGE_QUALITY || "low";
+const IMAGE_FORMAT = (process.env.IMAGE_FORMAT || "jpeg").toLowerCase();
+const IMAGE_COMPRESSION = Number(process.env.IMAGE_COMPRESSION ?? "72");
+
+function normalizedImageFormat(): "jpeg" | "webp" | "png" {
+  if (IMAGE_FORMAT === "jpg" || IMAGE_FORMAT === "jpeg") return "jpeg";
+  if (IMAGE_FORMAT === "webp") return "webp";
+  return "png";
+}
+
+export type GeneratedImage = {
+  bytes: Uint8Array;
+  contentType: string;
+  extension: "jpg" | "webp" | "png";
+  estimatedUsd: number;
+  model: string;
+  quality: string;
+  size: string;
+  format: "jpeg" | "webp" | "png";
+};
+
+export function estimateImageUsd(
+  model = IMAGE_MODEL,
+  quality = IMAGE_QUALITY,
+  size = IMAGE_SIZE,
+): number {
+  const key = `${model}|${quality}|${size}`.toLowerCase();
+  const costs: Record<string, number> = {
+    "gpt-image-2|low|1024x1024": 0.006,
+    "gpt-image-2|medium|1024x1024": 0.053,
+    "gpt-image-2|high|1024x1024": 0.211,
+    "gpt-image-1.5|low|1024x1024": 0.009,
+    "gpt-image-1.5|medium|1024x1024": 0.034,
+    "gpt-image-1.5|high|1024x1024": 0.133,
+    "gpt-image-1|low|1024x1024": 0.011,
+    "gpt-image-1|medium|1024x1024": 0.042,
+    "gpt-image-1|high|1024x1024": 0.167,
+    "gpt-image-1-mini|low|1024x1024": 0.005,
+    "gpt-image-1-mini|medium|1024x1024": 0.011,
+    "gpt-image-1-mini|high|1024x1024": 0.036,
+  };
+  return costs[key] ?? (quality === "high" ? 0.211 : quality === "medium" ? 0.053 : 0.006);
+}
+
+export async function generateImage(prompt: string): Promise<GeneratedImage> {
+  const format = normalizedImageFormat();
+  const body: Record<string, unknown> = {
+    model: IMAGE_MODEL,
+    prompt,
+    n: 1,
+    size: IMAGE_SIZE,
+    quality: IMAGE_QUALITY,
+  };
+  if (format !== "png") {
+    body.output_format = format;
+    if (Number.isFinite(IMAGE_COMPRESSION)) {
+      body.output_compression = Math.min(100, Math.max(0, IMAGE_COMPRESSION));
+    }
+  }
   const res = await openaiFetch("/images/generations", {
     method: "POST",
-    body: JSON.stringify({
-      model: "gpt-image-1",
-      prompt,
-      n: 1,
-      size: "1024x1024",
-      // low ($0.011) carries the new magical prompt well enough. Bump to
-      // medium ($0.042) per-deploy via IMAGE_QUALITY=medium if Anežka wants
-      // crisper detail on a particular run.
-      quality: process.env.IMAGE_QUALITY || "low",
-    }),
+    body: JSON.stringify(body),
     retries: 1,
     timeoutMs: 90_000,
   });
   const data = (await res.json()) as { data: Array<{ b64_json: string }> };
   const b64 = data.data?.[0]?.b64_json;
   if (!b64) throw new Error("OpenAI images: missing b64_json in response");
-  return Buffer.from(b64, "base64");
+  return {
+    bytes: Buffer.from(b64, "base64"),
+    contentType: format === "png" ? "image/png" : `image/${format}`,
+    extension: format === "jpeg" ? "jpg" : format,
+    estimatedUsd: estimateImageUsd(IMAGE_MODEL, IMAGE_QUALITY, IMAGE_SIZE),
+    model: IMAGE_MODEL,
+    quality: IMAGE_QUALITY,
+    size: IMAGE_SIZE,
+    format,
+  };
 }
 
 export function buildImagePrompt(popis: string, nalada: string): string {
@@ -109,10 +169,9 @@ export function buildImagePrompt(popis: string, nalada: string): string {
   };
   const moodTag = moodMap[nalada] ?? moodMap["veselá"];
   return [
-    "Painterly art-book illustration — closer to a fine-art picture book for older readers than a cute kids' cartoon. Hand-painted feel: visible watercolor washes, fine ink linework, painterly texture, slight imperfection of brush strokes.",
-    "Style references: the poetic atmospheric illustrations of Pavel Čech (Czech), Carson Ellis's folk-tale palette, Lorenzo Mattotti's softer color work, Pascal Campion's small-moment cinematography, Studio Ghibli background paintings. Composition is confident and simple, painted with rich texture.",
-    "Palette: restrained but resonant — jewel-tone accents grounded by warm neutrals, not generic pastel-uniform sweetness. Strong atmosphere and depth from layered light, not from heavy detail.",
-    "Suggested rather than over-detailed: leave painterly space for imagination. Characters are warm and individual, not big-eyed Disney-cute, not flat vector style, not generic stock-illustration look.",
+    "Warm hand-painted Czech picture-book illustration, watercolor washes, fine ink linework, textured paper, clear simple composition.",
+    "Palette: resonant but gentle, jewel-tone accents with warm neutrals, atmospheric light and depth without clutter.",
+    "Suggested rather than over-detailed: leave painterly space for imagination. Characters are warm and individual, not big-eyed, not flat vector style.",
     "Avoid: flat vector cartoon, big-eyed saccharine character design, candy pastel uniformity, soft-lit safe sweetness, Pixar/Disney styling, generic kids'-book art, photoreal rendering, 3D look.",
     "Wholesome and safe: never scary, violent, or unsettling; all characters kind and inviting. No text, no letters, no captions, no signage anywhere in the image.",
     `Subject: ${popis}.`,

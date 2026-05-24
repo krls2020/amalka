@@ -6,17 +6,18 @@ import {
   dailyBudgetCheck,
   recordUsageUsd,
 } from "../lib/ratelimit.ts";
-import { issueNonce } from "../lib/nonces.ts";
+import { issueNonce, issueUsageKey, validateUsageKey } from "../lib/nonces.ts";
 import { log } from "../lib/redact.ts";
 
 const r = new Hono();
 
 const MAX_SESSIONS_PER_DAY = 30;
-// Persona calls nakresli_obrazek 1-2× per story; 6 is generous headroom for
-// a few stories per session while capping worst-case spend.
+// The persona now draws at most once per story. Three images is enough for a
+// normal child session and caps accidental tool loops.
 const MAX_IMAGES_PER_SESSION = Number(
-  process.env.MAX_IMAGES_PER_SESSION ?? "6",
+  process.env.MAX_IMAGES_PER_SESSION ?? "3",
 );
+const CLIENT_SECRET_SAFETY_SECONDS = 30;
 
 function hashIp(ip: string): string {
   return new Bun.CryptoHasher("sha256").update(ip).digest("hex").slice(0, 16);
@@ -49,16 +50,28 @@ r.post("/api/realtime/session", async (c) => {
     const secret = await issueClientSecret(`amalka-${hashIp(ip)}`);
     const nonce = await issueNonce(MAX_IMAGES_PER_SESSION);
     const sessionId = secret.session?.id ?? null;
+    const usageKey = sessionId ? await issueUsageKey(sessionId) : null;
+    const configuredMaxSeconds = Math.max(
+      60,
+      Number(process.env.MAX_SESSION_MINUTES ?? "9") * 60,
+    );
+    const tokenSeconds = Math.max(
+      60,
+      secret.expires_at - Math.floor(Date.now() / 1000) - CLIENT_SECRET_SAFETY_SECONDS,
+    );
+    const maxSessionSeconds = Math.min(configuredMaxSeconds, tokenSeconds);
     log.info(`session issued sessionId=${sessionId} ip=${ip} model=${REALTIME_MODEL}`);
     return c.json({
       ok: true,
       clientSecret: secret.value,
       expiresAt: secret.expires_at,
       sessionId,
+      usageKey,
       nonce,
       model: REALTIME_MODEL,
       maxImages: MAX_IMAGES_PER_SESSION,
-      maxSessionMinutes: Number(process.env.MAX_SESSION_MINUTES ?? "30"),
+      maxSessionSeconds,
+      maxSessionMinutes: Math.max(1, Math.floor(maxSessionSeconds / 60)),
     });
   } catch (e) {
     log.error("issueClientSecret failed", String(e));
@@ -67,17 +80,50 @@ r.post("/api/realtime/session", async (c) => {
 });
 
 // Realtime pricing per 1M tokens (USD). Override via env if OpenAI changes rates.
-// Defaults: gpt-realtime-mini (current GA cost-efficient model). Full audio/text
-// rates match gpt-4o-mini-realtime-preview; cached_in drops from $0.30 to $0.06.
-// Flagship gpt-realtime is roughly 3× higher — override via PRICE_REALTIME_* envs
-// when REALTIME_MODEL points there.
+function defaultRealtimePrices(model: string) {
+  const m = model.toLowerCase();
+  if (m.includes("mini")) {
+    return {
+      inText: 0.6,
+      outText: 2.4,
+      inAudio: 10,
+      outAudio: 20,
+      cachedInText: 0.06,
+      cachedInAudio: 0.3,
+    };
+  }
+  if (m.includes("1.5")) {
+    return {
+      inText: 4,
+      outText: 16,
+      inAudio: 32,
+      outAudio: 64,
+      cachedInText: 0.4,
+      cachedInAudio: 0.4,
+    };
+  }
+  return {
+    inText: 4,
+    outText: 24,
+    inAudio: 32,
+    outAudio: 64,
+    cachedInText: 0.4,
+    cachedInAudio: 0.4,
+  };
+}
+
+const DEFAULT_PRICE_PER_M = defaultRealtimePrices(REALTIME_MODEL);
 const PRICE_PER_M = {
-  inText: Number(process.env.PRICE_REALTIME_IN_TEXT ?? "0.6"),
-  outText: Number(process.env.PRICE_REALTIME_OUT_TEXT ?? "2.4"),
-  inAudio: Number(process.env.PRICE_REALTIME_IN_AUDIO ?? "10"),
-  outAudio: Number(process.env.PRICE_REALTIME_OUT_AUDIO ?? "20"),
-  cachedInText: Number(process.env.PRICE_REALTIME_CACHED_IN_TEXT ?? "0.06"),
-  cachedInAudio: Number(process.env.PRICE_REALTIME_CACHED_IN_AUDIO ?? "0.3"),
+  inText: Number(process.env.PRICE_REALTIME_IN_TEXT ?? DEFAULT_PRICE_PER_M.inText),
+  outText: Number(process.env.PRICE_REALTIME_OUT_TEXT ?? DEFAULT_PRICE_PER_M.outText),
+  inAudio: Number(process.env.PRICE_REALTIME_IN_AUDIO ?? DEFAULT_PRICE_PER_M.inAudio),
+  outAudio: Number(process.env.PRICE_REALTIME_OUT_AUDIO ?? DEFAULT_PRICE_PER_M.outAudio),
+  cachedInText: Number(
+    process.env.PRICE_REALTIME_CACHED_IN_TEXT ?? DEFAULT_PRICE_PER_M.cachedInText,
+  ),
+  cachedInAudio: Number(
+    process.env.PRICE_REALTIME_CACHED_IN_AUDIO ?? DEFAULT_PRICE_PER_M.cachedInAudio,
+  ),
 };
 
 type CachedDetails = {
@@ -91,6 +137,7 @@ type UsageDetails = {
 };
 type UsageBody = {
   sessionId?: string;
+  usageKey?: string;
   input_tokens?: number;
   output_tokens?: number;
   input_token_details?: UsageDetails & {
@@ -111,8 +158,14 @@ function usdFromUsage(u: UsageBody): number {
   // single cached_tokens applied to text bucket when details are missing.
   const cDet = inDet.cached_tokens_details ?? {};
   const cachedTotal = Math.max(0, Number(inDet.cached_tokens ?? 0));
-  const cachedText = Math.max(0, Number(cDet.text_tokens ?? cachedTotal));
-  const cachedAudio = Math.max(0, Number(cDet.audio_tokens ?? 0));
+  const cachedText = Math.min(
+    inText,
+    Math.max(0, Number(cDet.text_tokens ?? cachedTotal)),
+  );
+  const cachedAudio = Math.min(
+    inAudio,
+    Math.max(0, Number(cDet.audio_tokens ?? Math.max(0, cachedTotal - cachedText))),
+  );
   const uncachedInText = Math.max(0, inText - cachedText);
   const uncachedInAudio = Math.max(0, inAudio - cachedAudio);
   const usd =
@@ -128,7 +181,7 @@ function usdFromUsage(u: UsageBody): number {
 
 // Hard ceiling per-call to prevent a malicious client from inflating the meter.
 // Even a worst-case 1-min Realtime turn at full volume is well under $1.
-const USAGE_CALL_CEILING_USD = 1.0;
+const USAGE_CALL_CEILING_USD = Number(process.env.USAGE_CALL_CEILING_USD ?? "0.25");
 
 r.post("/api/session/usage", async (c) => {
   let body: UsageBody = {};
@@ -136,6 +189,9 @@ r.post("/api/session/usage", async (c) => {
     body = await c.req.json();
   } catch {
     return c.json({ ok: false, reason: "bad_request" }, 400);
+  }
+  if (!(await validateUsageKey(body.sessionId, body.usageKey))) {
+    return c.json({ ok: false, reason: "invalid_usage_key" }, 403);
   }
   const usd = Math.min(USAGE_CALL_CEILING_USD, usdFromUsage(body));
   if (usd <= 0) return c.json({ ok: true, usd: 0 });

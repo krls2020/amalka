@@ -73,10 +73,14 @@ export async function cacheIncrFloat(
   }
 }
 
-export async function putImage(key: string, bytes: Uint8Array): Promise<void> {
+export async function putImage(
+  key: string,
+  bytes: Uint8Array,
+  contentType: string,
+): Promise<void> {
   if (!s3) throw new Error("S3 not configured");
   const file = s3.file(key);
-  await file.write(bytes, { type: "image/png" });
+  await file.write(bytes, { type: contentType });
 }
 
 export async function getImageBytes(key: string): Promise<Uint8Array | null> {
