@@ -1,10 +1,11 @@
 export const AMALKA_VOICE = process.env.AMALKA_VOICE || "marin";
 
-// gpt-4o-mini-realtime-preview is ~3× cheaper per audio token than gpt-realtime
-// flagship ($10/$20 vs $32/$64 per M). Quality is plenty for a child's
-// conversational use. Override via REALTIME_MODEL env if needed.
+// gpt-realtime-mini is the current cost-efficient Realtime model
+// (gpt-4o-mini-realtime-preview was deprecated). Full audio/text rates are
+// the same; cached input drops to ~$0.06/M (vs $0.30/M on the preview), so
+// long-session cost is even lower thanks to prompt caching.
 export const REALTIME_MODEL =
-  process.env.REALTIME_MODEL || "gpt-4o-mini-realtime-preview";
+  process.env.REALTIME_MODEL || "gpt-realtime-mini";
 
 export const AMALKA_INSTRUCTIONS = `Jsi Amálka — robotická plyšová kamarádka šestileté Anežky. Mluvíš výhradně česky, vřele, ale jako **chytrá kamarádka**, ne paní učitelka.
 
