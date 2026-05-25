@@ -5,6 +5,7 @@ zerops:
       buildCommands:
         - bun install --frozen-lockfile || bun install
         - bun run typecheck
+        - bun test
       deployFiles:
         - ./
       cache:

@@ -2,10 +2,14 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { resolve, sep } from "node:path";
 import { log } from "./lib/redact.ts";
-import { cache } from "./storage.ts";
+import { cache, s3 } from "./storage.ts";
 import { getDailyUsd } from "./lib/ratelimit.ts";
 import sessionRoutes from "./routes/session.ts";
 import imageRoutes from "./routes/image.ts";
+import { inspectConfig, assertConfigOrExit } from "./config.ts";
+
+const configReport = inspectConfig();
+assertConfigOrExit(configReport);
 
 const app = new Hono();
 
@@ -75,6 +79,45 @@ app.get("/api/debug/usage", async (c) => {
   const today = new Date().toISOString().slice(0, 10);
   const usd = await getDailyUsd();
   return c.json({ ok: true, date: today, usd });
+});
+
+// Deep health surfaces the exact set of things that caused recent regressions:
+// empty OPENAI_API_KEY, unknown voice/model, Valkey unreachable, S3 unreachable.
+// Gated by DEBUG_KEY so it can't be scraped for inventory. Returns 200 with
+// per-check status even when degraded — caller decides what to do.
+app.get("/api/health/deep", async (c) => {
+  const key = c.req.query("key");
+  if (!key || key !== process.env.DEBUG_KEY) {
+    return c.json({ ok: false }, 401);
+  }
+  const report = inspectConfig();
+  let cacheStatus: "ok" | "error" | "disabled" = "disabled";
+  if (cache) {
+    try {
+      const pong = await cache.send("PING", []);
+      cacheStatus =
+        typeof pong === "string" && pong.toUpperCase() === "PONG"
+          ? "ok"
+          : "error";
+    } catch {
+      cacheStatus = "error";
+    }
+  }
+  let storageStatus: "ok" | "error" | "disabled" = "disabled";
+  if (s3) {
+    try {
+      await s3.file(".healthprobe").exists();
+      storageStatus = "ok";
+    } catch {
+      storageStatus = "error";
+    }
+  }
+  return c.json({
+    ok: report.ok && cacheStatus !== "error" && storageStatus !== "error",
+    config: report,
+    cache: cacheStatus,
+    storage: storageStatus,
+  });
 });
 
 const PUBLIC_DIR = resolve("./public");
