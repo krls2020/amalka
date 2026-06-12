@@ -7,6 +7,9 @@ const ringEl = document.querySelector(".ring");
 const statusEl = $("status");
 const imgOverlay = $("imgOverlay");
 const storyImg = $("storyImg");
+const pexesoOverlay = $("pexesoOverlay");
+const pexesoGrid = $("pexesoGrid");
+const pexesoCloseBtn = $("pexesoClose");
 
 let pc = null;
 let dataCh = null;
@@ -90,6 +93,142 @@ imgOverlay.addEventListener("click", (e) => {
   hideImage();
 });
 
+// ---------- Pexeso ----------
+// 18 animal pairs = a 6×6 board. Each match is an English mini-lesson:
+// the game event tells Amálka the Czech + English name and she says it aloud.
+const PEXESO_ANIMALS = [
+  { emoji: "🦊", cs: "liška", en: "fox" },
+  { emoji: "🐶", cs: "pejsek", en: "dog" },
+  { emoji: "🐱", cs: "kočka", en: "cat" },
+  { emoji: "🐰", cs: "králík", en: "rabbit" },
+  { emoji: "🐻", cs: "medvěd", en: "bear" },
+  { emoji: "🦁", cs: "lev", en: "lion" },
+  { emoji: "🦉", cs: "sova", en: "owl" },
+  { emoji: "🐸", cs: "žába", en: "frog" },
+  { emoji: "🦆", cs: "kachnička", en: "duck" },
+  { emoji: "🦋", cs: "motýl", en: "butterfly" },
+  { emoji: "🐟", cs: "rybka", en: "fish" },
+  { emoji: "🐴", cs: "koník", en: "horse" },
+  { emoji: "🐭", cs: "myška", en: "mouse" },
+  { emoji: "🐼", cs: "panda", en: "panda" },
+  { emoji: "🐧", cs: "tučňák", en: "penguin" },
+  { emoji: "🐢", cs: "želva", en: "turtle" },
+  { emoji: "🐝", cs: "včelka", en: "bee" },
+  { emoji: "🐞", cs: "beruška", en: "ladybug" },
+];
+
+let pexeso = null; // { first: {card, animal}|null, lock: bool, matched, total }
+let pexesoWinTimer = null;
+
+// Inject a game event into the conversation as a system item so Amálka can
+// react in voice. Routed through requestResponse() so it never collides with
+// an active response (it queues and fires on response.done instead).
+function sendGameEvent(text) {
+  if (!dataCh || dataCh.readyState !== "open") return;
+  try {
+    dataCh.send(
+      JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "system",
+          content: [{ type: "input_text", text }],
+        },
+      }),
+    );
+    requestResponse();
+  } catch (e) {
+    console.warn("game event failed", e);
+  }
+}
+
+function startPexeso() {
+  clearTimeout(pexesoWinTimer);
+  pexesoWinTimer = null;
+  const deck = PEXESO_ANIMALS.flatMap((a) => [a, a]);
+  for (let i = deck.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+  pexesoGrid.innerHTML = "";
+  pexeso = { first: null, lock: false, matched: 0, total: PEXESO_ANIMALS.length };
+  for (const animal of deck) {
+    const card = document.createElement("button");
+    card.className = "pexcard";
+    card.innerHTML =
+      '<div class="pexcard-inner">' +
+      '<div class="pexface back">🐾</div>' +
+      `<div class="pexface front">${animal.emoji}</div>` +
+      "</div>";
+    card.addEventListener("click", () => onPexesoCardTap(card, animal));
+    pexesoGrid.appendChild(card);
+  }
+  pexesoOverlay.classList.remove("won");
+  pexesoOverlay.classList.add("show");
+  amalkaEl.classList.add("shrink");
+  setStatus("hrajeme pexeso");
+}
+
+function hidePexeso() {
+  clearTimeout(pexesoWinTimer);
+  pexesoWinTimer = null;
+  pexeso = null;
+  pexesoOverlay.classList.remove("show", "won");
+  pexesoGrid.innerHTML = "";
+  // Keep Amálka shrunk if a story image is still on screen.
+  if (!imgOverlay.classList.contains("show")) amalkaEl.classList.remove("shrink");
+}
+
+function onPexesoCardTap(card, animal) {
+  if (!pexeso || pexeso.lock) return;
+  if (card.classList.contains("flipped")) return;
+  card.classList.add("flipped");
+  if (!pexeso.first) {
+    pexeso.first = { card, animal };
+    return;
+  }
+  const first = pexeso.first;
+  pexeso.first = null;
+  if (first.animal.en === animal.en) {
+    first.card.classList.add("matched");
+    card.classList.add("matched");
+    pexeso.matched++;
+    if (pexeso.matched >= pexeso.total) {
+      pexesoOverlay.classList.add("won");
+      sendGameEvent(
+        `[PEXESO] Anežka právě dohrála celé pexeso — našla všech ${pexeso.total} dvojic! Poslední bylo zvířátko ${animal.cs} (anglicky "${animal.en}"). Nadšeně jí pogratuluj a hravě s ní zopakuj dvě tři anglická slovíčka zvířátek ze hry.`,
+      );
+      const era = sessionEra;
+      pexesoWinTimer = setTimeout(() => {
+        if (era === sessionEra) hidePexeso();
+      }, 8000);
+    } else {
+      sendGameEvent(
+        `[PEXESO] Anežka našla dvojici: ${animal.cs} — anglicky "${animal.en}". Zareaguj jednou krátkou nadšenou větou a řekni anglické slovíčko pomalu a zřetelně (klidně dvakrát). Nepokládej otázku, hra běží dál.`,
+      );
+    }
+  } else {
+    // Miss: flip back silently — no voice event, the game stays snappy.
+    pexeso.lock = true;
+    setTimeout(() => {
+      first.card.classList.remove("flipped");
+      card.classList.remove("flipped");
+      if (pexeso) pexeso.lock = false;
+    }, 950);
+  }
+}
+
+pexesoCloseBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const wasRunning = pexeso && pexeso.matched < pexeso.total;
+  hidePexeso();
+  if (wasRunning) {
+    sendGameEvent(
+      "[PEXESO] Anežka zavřela pexeso před dohráním. Krátce a mile to vezmi na vědomí a zeptej se, co chce dělat dál.",
+    );
+  }
+});
+
 function scheduleBlink() {
   setTimeout(() => {
     head.classList.add("blinking");
@@ -117,6 +256,7 @@ function disconnect(reason) {
   clearTimeout(activeImageTimer);
   activeImageTimer = null;
   hideImage();
+  hidePexeso();
   amalkaEl?.classList.remove("paused");
   cancelAnimationFrame(rafId);
   cancelAnimationFrame(inRafId);
@@ -487,6 +627,16 @@ function handleToolCall(call) {
   if (call.name === "wait_for_user") {
     sendToolAck(callId, { success: true }, false);
     setStatus("povídej!");
+    return;
+  }
+
+  if (call.name === "hraj_pexeso") {
+    startPexeso();
+    sendToolAck(callId, {
+      success: true,
+      message:
+        "Pexeso 6×6 se zvířátky je na obrazovce. Anežka otáčí kartičky prstem; o shodách tě informují zprávy [PEXESO]. Řekni jí jednou krátkou větou, že hra začíná a může otáčet.",
+    });
     return;
   }
 

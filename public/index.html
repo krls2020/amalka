@@ -112,6 +112,46 @@
   .amalka.paused .antenna{animation-duration:7s}
   .ring.paused{animation:none;border-color:#C9C9D4;opacity:.25}
   @keyframes shimmer{0%{background-position:0% 0%}100%{background-position:300% 0%}}
+  /* ---------- Pexeso ---------- */
+  #pexesoOverlay{position:fixed;inset:0;z-index:40;display:none;
+    flex-direction:column;align-items:center;justify-content:center;gap:10px;
+    background:rgba(255,246,236,.92);backdrop-filter:blur(8px);padding:12px;
+  }
+  #pexesoOverlay.show{display:flex}
+  #imgOverlay{z-index:50}
+  #pexesoGrid{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;
+    width:min(96vw,78dvh,560px);
+  }
+  .pexcard{position:relative;aspect-ratio:1/1;border:none;background:none;
+    padding:0;cursor:pointer;perspective:400px;-webkit-tap-highlight-color:transparent;
+  }
+  .pexcard-inner{position:absolute;inset:0;transform-style:preserve-3d;
+    transition:transform .35s cubic-bezier(.4,0,.2,1);
+  }
+  .pexcard.flipped .pexcard-inner{transform:rotateY(180deg)}
+  .pexface{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    border-radius:14%;backface-visibility:hidden;-webkit-backface-visibility:hidden;
+    box-shadow:0 4px 10px -3px rgba(180,120,90,.35);
+  }
+  .pexface.back{background:linear-gradient(135deg,#F4B5C1,#D9C2F0);
+    color:rgba(255,255,255,.85);font-size:clamp(16px,4.5vw,26px);
+  }
+  .pexface.front{background:#FFFDF8;transform:rotateY(180deg);
+    font-size:clamp(22px,7vw,44px);
+  }
+  .pexcard.matched{pointer-events:none}
+  .pexcard.matched .pexface.front{background:#EAF7EF;
+    box-shadow:0 0 0 2px #7BC4A4,0 4px 12px -3px rgba(123,196,164,.6);
+    animation:matchpop .5s ease;
+  }
+  @keyframes matchpop{0%{transform:rotateY(180deg) scale(1)}50%{transform:rotateY(180deg) scale(1.12)}100%{transform:rotateY(180deg) scale(1)}}
+  #pexesoTitle{font-size:15px;color:var(--teal);opacity:.85;letter-spacing:.04em}
+  #pexesoClose{position:absolute;top:10px;right:12px;width:44px;height:44px;
+    border-radius:50%;border:none;background:rgba(244,181,193,.9);color:#fff;
+    font-size:20px;cursor:pointer;box-shadow:0 6px 14px -4px rgba(200,120,140,.5);
+  }
+  #pexesoOverlay.won #pexesoGrid{animation:wonwiggle 1.2s ease 2}
+  @keyframes wonwiggle{0%,100%{transform:rotate(0)}25%{transform:rotate(1.2deg)}75%{transform:rotate(-1.2deg)}}
 </style>
 </head>
 <body>
@@ -139,6 +179,11 @@
       <button id="mic" class="mic" data-state="off" aria-label="mikrofon"></button>
     </div>
   </div>
+</div>
+<div id="pexesoOverlay">
+  <div id="pexesoTitle">pexeso se zvířátky</div>
+  <div id="pexesoGrid"></div>
+  <button id="pexesoClose" aria-label="zavřít pexeso">✕</button>
 </div>
 <div id="imgOverlay"><img id="storyImg" alt=""></div>
 <audio id="amalkaAudio" autoplay playsinline></audio>

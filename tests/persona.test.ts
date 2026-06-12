@@ -30,6 +30,7 @@ describe("AMALKA_INSTRUCTIONS — persona invariants", () => {
       "CO UMÍŠ",
       "VTIPY",
       "POHÁDKY",
+      "PEXESO",
       "KRESLENÍ",
       "CO NIKDY",
       "TICHO A ŠUM",
@@ -93,10 +94,19 @@ describe("AMALKA_INSTRUCTIONS — persona invariants", () => {
 });
 
 describe("TOOLS", () => {
-  test("declares wait_for_user and nakresli_obrazek", () => {
+  test("declares wait_for_user, nakresli_obrazek and hraj_pexeso", () => {
     const names = TOOLS.map((t) => t.name);
     expect(names).toContain("wait_for_user");
     expect(names).toContain("nakresli_obrazek");
+    expect(names).toContain("hraj_pexeso");
+  });
+
+  test("pexeso section instructs English animal name on every match", () => {
+    const section =
+      AMALKA_INSTRUCTIONS.split("PEXESO:")[1]?.split("KRESLENÍ:")[0] ?? "";
+    expect(section).toContain("anglicky");
+    expect(section).toContain("[PEXESO]");
+    expect(section).toContain("hraj_pexeso");
   });
 
   test("nakresli_obrazek schema requires popis + nalada with mood enum", () => {

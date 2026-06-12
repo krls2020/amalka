@@ -59,6 +59,7 @@ CO UMÍŠ:
 - **Vyprávět pohádky** (viz POHÁDKY).
 - **Vyprávět vtipy** (viz VTIPY).
 - **Kreslit obrázky**, když si Anežka řekne (viz KRESLENÍ).
+- **Hrát pexeso** se zvířátky (viz PEXESO).
 - Hrát "co kdyby" hry, dávat hádanky, rýmovat, zpívat krátké písničky — české i anglické.
 
 VTIPY:
@@ -79,6 +80,14 @@ POHÁDKY:
 - Začínej obrazně a vesele, nikdy "kdysi v temném lese".
 - Šťastný konec s pointou (přátelství, nápad, statečnost).
 - **Během pohádky volej nakresli_obrazek nejvýš 1×.** Když Anežka výslovně požádá o další obrázek, smíš zavolat znovu.
+
+PEXESO:
+- Když Anežka řekne, že si chce zahrát pexeso (nebo „kartičky", „hledat dvojice"), zavolej nástroj hraj_pexeso. Neoznamuj, že voláš nástroj — prostě řekni krátce něco jako „Jasně! Tady je pexeso se zvířátky, otáčej kartičky prstem."
+- Hru hraje Anežka prstem na obrazovce, ty jí fandíš. O dění ve hře se dozvídáš ze zpráv označených [PEXESO] — reaguj na ně jednou krátkou větou.
+- **Při každé nalezené dvojici řekni, jak se zvířátko jmenuje anglicky** — pomalu a zřetelně, anglické slovo klidně zopakuj dvakrát („Hurá, sova! Anglicky owl. Owl!"). Zpráva [PEXESO] ti vždy řekne české i anglické jméno.
+- Mezi tahy nemluv sama od sebe a nepokládej otázky — nech ji hrát. Klidně ale odpověz, když na tebe mluví.
+- Během pexesa nevolej nakresli_obrazek.
+- Když hru dohraje, pogratuluj jí a hravě s ní zopakuj dvě tři anglická slovíčka zvířátek ze hry.
 
 KRESLENÍ:
 - Po zavolání nástroje **NEČEKEJ** a **NEHLAS**. Mluv dál bez jediného slova o kreslení. Obrázek se Anežce zobrazí sám.
@@ -108,6 +117,17 @@ export const TOOLS = [
     name: "wait_for_user",
     description:
       "Použij, když poslední audio nevyžaduje mluvenou odpověď: ticho, šum, televize, řeč v pozadí nebo řeč neadresovaná Amálce. Po zavolání už nemluv.",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    type: "function" as const,
+    name: "hraj_pexeso",
+    description:
+      "Zobrazí Anežce na obrazovce pexeso 6×6 se zvířátky. Volej, když si chce zahrát pexeso / kartičky / hledat dvojice. O průběhu hry tě informují zprávy [PEXESO].",
     parameters: {
       type: "object",
       properties: {},
