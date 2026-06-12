@@ -94,8 +94,11 @@ imgOverlay.addEventListener("click", (e) => {
 });
 
 // ---------- Pexeso ----------
-// 18 animal pairs = a 6×6 board. Each match is an English mini-lesson:
-// the game event tells Amálka the Czech + English name and she says it aloud.
+// 5×5 board: 12 animal pairs (drawn from the pool below, different mix each
+// game) + a decorative star in the center. Anežka and Amálka alternate turns;
+// Amálka's moves are simulated client-side with imperfect memory so a 6yo
+// wins more often than not. Each match is an English mini-lesson: the game
+// event tells Amálka the Czech + English name and she says it aloud.
 const PEXESO_ANIMALS = [
   { emoji: "🦊", cs: "liška", en: "fox" },
   { emoji: "🐶", cs: "pejsek", en: "dog" },
@@ -117,8 +120,25 @@ const PEXESO_ANIMALS = [
   { emoji: "🐞", cs: "beruška", en: "ladybug" },
 ];
 
-let pexeso = null; // { first: {card, animal}|null, lock: bool, matched, total }
-let pexesoWinTimer = null;
+const PEXESO_PAIRS = 12; // 5×5 = 24 cards + decorative star center
+
+// Amálka's simulated memory. Tuned by simulation (tests/pexeso-sim.ts) so an
+// average 6yo wins ~80% of games: full memory only while LOSING, half memory
+// otherwise (the rubber-band keeps games close without Amálka winning much).
+const AMALKA_RECALL_PAIR = 0.3; // chance to play a fully-seen pair
+const AMALKA_RECALL_PARTNER = 0.38; // chance to remember the partner's spot
+const AMALKA_NOT_LOSING_FACTOR = 0.5; // memory multiplier when not losing
+
+let pexeso = null;
+let pexesoTimers = [];
+
+function pexTimeout(fn, ms) {
+  pexesoTimers.push(setTimeout(fn, ms));
+}
+function clearPexesoTimers() {
+  for (const t of pexesoTimers) clearTimeout(t);
+  pexesoTimers = [];
+}
 
 // Inject a game event into the conversation as a system item so Amálka can
 // react in voice. Routed through requestResponse() so it never collides with
@@ -142,85 +162,218 @@ function sendGameEvent(text) {
   }
 }
 
+function updatePexesoTitle() {
+  const t = $("pexesoTitle");
+  if (!pexeso) {
+    t.textContent = "pexeso se zvířátky";
+    return;
+  }
+  const left = pexeso.turn === "anezka" ? "▶ " : "";
+  const right = pexeso.turn === "amalka" ? " ◀" : "";
+  t.textContent = `${left}Anežka ${pexeso.scores.anezka} 🐾 ${pexeso.scores.amalka} Amálka${right}`;
+}
+
 function startPexeso() {
-  clearTimeout(pexesoWinTimer);
-  pexesoWinTimer = null;
-  const deck = PEXESO_ANIMALS.flatMap((a) => [a, a]);
+  clearPexesoTimers();
+  const pool = [...PEXESO_ANIMALS];
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  const animals = pool.slice(0, PEXESO_PAIRS);
+  const deck = animals.flatMap((a) => [a, a]);
   for (let i = deck.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [deck[i], deck[j]] = [deck[j], deck[i]];
   }
   pexesoGrid.innerHTML = "";
-  pexeso = { first: null, lock: false, matched: 0, total: PEXESO_ANIMALS.length };
-  for (const animal of deck) {
-    const card = document.createElement("button");
-    card.className = "pexcard";
-    card.innerHTML =
+  pexeso = {
+    cards: [],
+    first: null,
+    lock: false,
+    turn: "anezka",
+    scores: { anezka: 0, amalka: 0 },
+    total: PEXESO_PAIRS,
+  };
+  let d = 0;
+  for (let slot = 0; slot < 25; slot++) {
+    if (slot === 12) {
+      // Center star — decorative, never playable; makes 24 cards fill 5×5.
+      const star = document.createElement("button");
+      star.className = "pexcard flipped matched";
+      star.disabled = true;
+      star.innerHTML =
+        '<div class="pexcard-inner">' +
+        '<div class="pexface back">🐾</div>' +
+        '<div class="pexface front">⭐</div>' +
+        "</div>";
+      pexesoGrid.appendChild(star);
+      continue;
+    }
+    const animal = deck[d++];
+    const el = document.createElement("button");
+    el.className = "pexcard";
+    el.innerHTML =
       '<div class="pexcard-inner">' +
       '<div class="pexface back">🐾</div>' +
       `<div class="pexface front">${animal.emoji}</div>` +
       "</div>";
-    card.addEventListener("click", () => onPexesoCardTap(card, animal));
-    pexesoGrid.appendChild(card);
+    const card = { el, animal, matched: false, seen: false };
+    el.addEventListener("click", () => onPexesoCardTap(card));
+    pexeso.cards.push(card);
+    pexesoGrid.appendChild(el);
   }
   pexesoOverlay.classList.remove("won");
   pexesoOverlay.classList.add("show");
   amalkaEl.classList.add("shrink");
   setStatus("hrajeme pexeso");
+  updatePexesoTitle();
 }
 
 function hidePexeso() {
-  clearTimeout(pexesoWinTimer);
-  pexesoWinTimer = null;
+  clearPexesoTimers();
   pexeso = null;
   pexesoOverlay.classList.remove("show", "won");
   pexesoGrid.innerHTML = "";
+  updatePexesoTitle();
   // Keep Amálka shrunk if a story image is still on screen.
   if (!imgOverlay.classList.contains("show")) amalkaEl.classList.remove("shrink");
 }
 
-function onPexesoCardTap(card, animal) {
-  if (!pexeso || pexeso.lock) return;
-  if (card.classList.contains("flipped")) return;
-  card.classList.add("flipped");
+function flipUp(card) {
+  card.el.classList.add("flipped");
+  card.seen = true;
+}
+function flipDown(card) {
+  card.el.classList.remove("flipped");
+}
+function markMatched(a, b, who) {
+  a.matched = b.matched = true;
+  a.el.classList.add("matched");
+  b.el.classList.add("matched");
+  pexeso.scores[who]++;
+  updatePexesoTitle();
+  return pexeso.scores.anezka + pexeso.scores.amalka >= pexeso.total;
+}
+
+function finishPexeso(lastAnimal) {
+  const { anezka, amalka } = pexeso.scores;
+  const outcome =
+    anezka > amalka
+      ? "Vyhrála Anežka — nadšeně slav a pogratuluj jí!"
+      : anezka === amalka
+        ? "Je to remíza — oslavte ji společně."
+        : "Vyhrála jsi ty — buď skromná, pochval Anežku, jak skvěle hledala, a řekni, že příště to určitě vyjde jí.";
+  pexesoOverlay.classList.add("won");
+  sendGameEvent(
+    `[PEXESO] Pexeso je dohrané! Konečné skóre: Anežka ${anezka} dvojic, ty (Amálka) ${amalka}. ${outcome} Poslední dvojice byla ${lastAnimal.cs} — anglicky "${lastAnimal.en}". Nakonec spolu hravě zopakujte dvě tři anglická slovíčka zvířátek ze hry.`,
+  );
+  pexTimeout(() => {
+    if (pexeso) hidePexeso();
+  }, 9000);
+}
+
+function onPexesoCardTap(card) {
+  if (!pexeso || pexeso.lock || pexeso.turn !== "anezka") return;
+  if (card.matched || card === pexeso.first) return;
+  flipUp(card);
   if (!pexeso.first) {
-    pexeso.first = { card, animal };
+    pexeso.first = card;
     return;
   }
   const first = pexeso.first;
   pexeso.first = null;
-  if (first.animal.en === animal.en) {
-    first.card.classList.add("matched");
-    card.classList.add("matched");
-    pexeso.matched++;
-    if (pexeso.matched >= pexeso.total) {
-      pexesoOverlay.classList.add("won");
-      sendGameEvent(
-        `[PEXESO] Anežka právě dohrála celé pexeso — našla všech ${pexeso.total} dvojic! Poslední bylo zvířátko ${animal.cs} (anglicky "${animal.en}"). Nadšeně jí pogratuluj a hravě s ní zopakuj dvě tři anglická slovíčka zvířátek ze hry.`,
-      );
-      const era = sessionEra;
-      pexesoWinTimer = setTimeout(() => {
-        if (era === sessionEra) hidePexeso();
-      }, 8000);
+  if (first.animal.en === card.animal.en) {
+    const done = markMatched(first, card, "anezka");
+    if (done) {
+      finishPexeso(card.animal);
     } else {
+      // Classic pexeso rule: a match means you play again.
       sendGameEvent(
-        `[PEXESO] Anežka našla dvojici: ${animal.cs} — anglicky "${animal.en}". Zareaguj jednou krátkou nadšenou větou a řekni anglické slovíčko pomalu a zřetelně (klidně dvakrát). Nepokládej otázku, hra běží dál.`,
+        `[PEXESO] Anežka našla dvojici: ${card.animal.cs} — anglicky "${card.animal.en}". Skóre: Anežka ${pexeso.scores.anezka}, ty ${pexeso.scores.amalka}. Zareaguj jednou krátkou nadšenou větou, řekni anglické slovíčko pomalu a zřetelně (klidně dvakrát) a připomeň, že hraje dál. Nepokládej otázku.`,
       );
     }
   } else {
-    // Miss: flip back silently — no voice event, the game stays snappy.
     pexeso.lock = true;
-    setTimeout(() => {
-      first.card.classList.remove("flipped");
-      card.classList.remove("flipped");
-      if (pexeso) pexeso.lock = false;
+    pexTimeout(() => {
+      if (!pexeso) return;
+      flipDown(first);
+      flipDown(card);
+      amalkaTurn(`Anežce se dvojice nepovedla (${first.animal.cs} a ${card.animal.cs}). `);
     }, 950);
   }
 }
 
+// Amálka's card picker. Mostly random; sometimes uses "memory" of cards
+// already revealed — full strength only while losing (rubber-band).
+function amalkaPickCards() {
+  const open = pexeso.cards.filter((c) => !c.matched);
+  const losing = pexeso.scores.amalka < pexeso.scores.anezka;
+  const f = losing ? 1 : AMALKA_NOT_LOSING_FACTOR;
+  const recallPair = AMALKA_RECALL_PAIR * f;
+  const recallPartner = AMALKA_RECALL_PARTNER * f;
+
+  const seen = open.filter((c) => c.seen);
+  const byAnimal = new Map();
+  for (const c of seen) {
+    const g = byAnimal.get(c.animal.en) ?? [];
+    g.push(c);
+    byAnimal.set(c.animal.en, g);
+  }
+  const knownPairs = [...byAnimal.values()].filter((g) => g.length === 2);
+  if (knownPairs.length && Math.random() < recallPair) {
+    return knownPairs[Math.floor(Math.random() * knownPairs.length)];
+  }
+  const first = open[Math.floor(Math.random() * open.length)];
+  const partner = seen.find(
+    (c) => c !== first && c.animal.en === first.animal.en,
+  );
+  if (partner && Math.random() < recallPartner) return [first, partner];
+  const rest = open.filter((c) => c !== first);
+  return [first, rest[Math.floor(Math.random() * rest.length)]];
+}
+
+function amalkaTurn(introNote) {
+  if (!pexeso) return;
+  pexeso.lock = true;
+  pexeso.turn = "amalka";
+  updatePexesoTitle();
+  const [c1, c2] = amalkaPickCards();
+  pexTimeout(() => pexeso && flipUp(c1), 900);
+  pexTimeout(() => pexeso && flipUp(c2), 2100);
+  pexTimeout(() => {
+    if (!pexeso) return;
+    if (c1.animal.en === c2.animal.en) {
+      const done = markMatched(c1, c2, "amalka");
+      if (done) {
+        finishPexeso(c2.animal);
+      } else {
+        sendGameEvent(
+          `[PEXESO] ${introNote}Pak jsi hrála ty (Amálka) a našla jsi dvojici: ${c1.animal.cs} — anglicky "${c1.animal.en}". Skóre: Anežka ${pexeso.scores.anezka}, ty ${pexeso.scores.amalka}. Jednou dvěma krátkými větami to mile okomentuj (bez vytahování), řekni anglické slovíčko pomalu a zřetelně a dodej, že hraješ ještě jednou.`,
+        );
+        // Give her a moment to say it before she plays again.
+        pexTimeout(() => pexeso && amalkaTurn(""), 4500);
+      }
+    } else {
+      sendGameEvent(
+        `[PEXESO] ${introNote}Pak jsi hrála ty (Amálka): otočila jsi ${c1.animal.cs} a ${c2.animal.cs} — žádná dvojice. Krátce a s humorem to okomentuj a řekni Anežce, že teď hraje zase ona. Žádná otázka.`,
+      );
+      pexTimeout(() => {
+        if (!pexeso) return;
+        flipDown(c1);
+        flipDown(c2);
+        pexeso.turn = "anezka";
+        pexeso.lock = false;
+        updatePexesoTitle();
+      }, 1400);
+    }
+  }, 3300);
+}
+
 pexesoCloseBtn.addEventListener("click", (e) => {
   e.stopPropagation();
-  const wasRunning = pexeso && pexeso.matched < pexeso.total;
+  const wasRunning =
+    pexeso && pexeso.scores.anezka + pexeso.scores.amalka < pexeso.total;
   hidePexeso();
   if (wasRunning) {
     sendGameEvent(
@@ -635,7 +788,7 @@ function handleToolCall(call) {
     sendToolAck(callId, {
       success: true,
       message:
-        "Pexeso 6×6 se zvířátky je na obrazovce. Anežka otáčí kartičky prstem; o shodách tě informují zprávy [PEXESO]. Řekni jí jednou krátkou větou, že hra začíná a může otáčet.",
+        "Pexeso 5×5 se zvířátky je na obrazovce, hrajete na střídačku a začíná Anežka. Tvoje tahy se otáčejí samy; o všem tě informují zprávy [PEXESO]. Řekni jí jednou krátkou větou, že hra začíná a otáčí první.",
     });
     return;
   }
