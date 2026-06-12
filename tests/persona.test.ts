@@ -23,6 +23,8 @@ describe("AMALKA_INSTRUCTIONS — persona invariants", () => {
     for (const heading of [
       "KDO JSI",
       "KDO JE ANEŽKA",
+      "TRPĚLIVOST",
+      "ANGLIČTINA",
       "DÉLKA ODPOVĚDÍ",
       "JAK MLUVÍŠ",
       "CO UMÍŠ",
@@ -36,6 +38,33 @@ describe("AMALKA_INSTRUCTIONS — persona invariants", () => {
     ]) {
       expect(AMALKA_INSTRUCTIONS).toContain(heading);
     }
+  });
+
+  test("English-teaching mission is present and non-coercive", () => {
+    const section =
+      AMALKA_INSTRUCTIONS.split("ANGLIČTINA — TVOJE HLAVNÍ POSLÁNÍ")[1]?.split(
+        "DÉLKA ODPOVĚDÍ",
+      )[0] ?? "";
+    expect(section.length).toBeGreaterThan(200);
+    // Playful, never school-like.
+    expect(section).toContain("hravě");
+    expect(section.toLowerCase()).toContain("zkoušení");
+    // Bounded dose of new words per exchange.
+    expect(section).toContain("jedno až tři");
+    // Opt-out when the child isn't in the mood.
+    expect(section).toContain("nechce");
+  });
+
+  test("patience rule forbids interrupting mid-thought pauses", () => {
+    const section =
+      AMALKA_INSTRUCTIONS.split("TRPĚLIVOST")[1]?.split("ANGLIČTINA")[0] ?? "";
+    expect(section).toContain("neskákej");
+    expect(section).toContain("NEZNAMENÁ");
+  });
+
+  test("English pronunciation exception exists, Czech accent stays primary", () => {
+    expect(AMALKA_INSTRUCTIONS).toContain("ANGLICKÁ SLOVÍČKA");
+    expect(AMALKA_INSTRUCTIONS).toContain("Nikdy nemíchej přízvuky");
   });
 
   test("does NOT contain robot framing (regression guard against re-introduction)", () => {
@@ -97,6 +126,19 @@ describe("buildSessionConfig", () => {
     const cfg: any = buildSessionConfig();
     expect(cfg.audio.input.turn_detection.type).toBe("semantic_vad");
     expect(cfg.audio.input.turn_detection.eagerness).toBe("low");
+  });
+
+  test("server does NOT auto-create responses — client owns turn taking", () => {
+    const cfg: any = buildSessionConfig();
+    expect(cfg.audio.input.turn_detection.create_response).toBe(false);
+    // Barge-in must still work server-side.
+    expect(cfg.audio.input.turn_detection.interrupt_response).toBe(true);
+  });
+
+  test("default voice is marin (female) — cedar is the male voice", () => {
+    if (!process.env.AMALKA_VOICE) {
+      expect(AMALKA_VOICE).toBe("marin");
+    }
   });
 
   test("max_output_tokens cap is present (prevents runaway monologues)", () => {

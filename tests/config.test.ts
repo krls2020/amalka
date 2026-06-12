@@ -84,11 +84,11 @@ describe("inspectConfig", () => {
     expect(r.resolved.s3).toBe(false);
   });
 
-  test("AMALKA_VOICE defaults to cedar when unset", () => {
+  test("AMALKA_VOICE defaults to marin when unset", () => {
     const e = baseEnv();
     delete e.AMALKA_VOICE;
     const r = inspectConfig(e);
-    expect(r.resolved.voice).toBe("cedar");
+    expect(r.resolved.voice).toBe("marin");
   });
 
   test("voice cedar is in the known set (regression guard against accidental removal)", () => {

@@ -34,6 +34,17 @@ let softWarnTimer = null;
 let iceGraceTimer = null;
 let cumulativeUsage = null;
 let lastSpeechStartedAt = 0;
+// Client-owned turn taking. The session is created with create_response:false,
+// so the server never answers on its own — WE decide when Anežka is done.
+// After speech_stopped we wait `patienceMs`; if she starts speaking again the
+// timer is cancelled and her continuation joins the same turn. This is the
+// anti-interruption core: a 6yo's mid-sentence thinking pause no longer
+// triggers an answer.
+let patienceMs = 1200;
+let serverCreatesResponse = false;
+let patienceTimer = null;
+let responseActive = false; // a response is being generated/spoken right now
+let responseQueued = false; // patience expired while a response was active
 // Bumped on every connect(); async callbacks (image gen, timers) capture the
 // era and bail if it changed, so stale state from a prior session never leaks
 // into a fresh one (e.g. old image showing up after a reconnect).
@@ -99,6 +110,10 @@ function disconnect(reason) {
   softWarnTimer = null;
   clearTimeout(iceGraceTimer);
   iceGraceTimer = null;
+  clearTimeout(patienceTimer);
+  patienceTimer = null;
+  responseActive = false;
+  responseQueued = false;
   clearTimeout(activeImageTimer);
   activeImageTimer = null;
   hideImage();
@@ -223,6 +238,8 @@ async function connect() {
   sessionId = token.sessionId;
   usageKey = token.usageKey;
   nonce = token.nonce;
+  patienceMs = Math.max(150, Number(token.patienceMs ?? 1200) || 1200);
+  serverCreatesResponse = !!token.serverCreatesResponse;
   cumulativeUsage = null;
   mediaStream = micResult.value;
 
@@ -264,8 +281,9 @@ async function connect() {
       // Flush any audio buffered between datachannel open and response start,
       // so ambient noise doesn't accidentally interrupt the greeting via VAD.
       dataCh.send(JSON.stringify({ type: "input_audio_buffer.clear" }));
-      // Persona's ZAČÁTEK rule produces the greeting.
-      dataCh.send(JSON.stringify({ type: "response.create" }));
+      // Persona's ZAČÁTEK rule produces the greeting. (create_response is
+      // off server-side, so the greeting — like every reply — is client-made.)
+      requestResponse();
     } catch (e) {
       console.warn("initial response.create failed", e);
     }
@@ -531,7 +549,9 @@ function sendToolAck(callId, output, createResponse = true) {
       },
     }),
   );
-  if (createResponse) dataCh.send(JSON.stringify({ type: "response.create" }));
+  // Route through requestResponse so a tool ack can't collide with an
+  // already-active response (the API rejects concurrent response.create).
+  if (createResponse) requestResponse();
 }
 
 // Legacy no-op: kept so we don't accidentally re-introduce iOS WebRTC track
@@ -592,14 +612,51 @@ function sendUsageBeacon() {
   cumulativeUsage = null;
 }
 
+// Ask the model to answer — but never while another response is active
+// (the API rejects concurrent responses). If one is active, queue: the
+// pending flag is flushed from response.done, which also covers the
+// barge-in path (child interrupts → response cancelled → done → new answer).
+function requestResponse() {
+  if (!dataCh || dataCh.readyState !== "open") return;
+  if (responseActive) {
+    responseQueued = true;
+    return;
+  }
+  responseQueued = false;
+  try {
+    dataCh.send(JSON.stringify({ type: "response.create" }));
+  } catch (e) {
+    console.warn("response.create failed", e);
+  }
+}
+
+function schedulePatienceResponse() {
+  if (serverCreatesResponse) return; // legacy mode: server answers on its own
+  clearTimeout(patienceTimer);
+  const era = sessionEra;
+  patienceTimer = setTimeout(() => {
+    patienceTimer = null;
+    if (era !== sessionEra || isPaused) return;
+    requestResponse();
+  }, patienceMs);
+}
+
 function handleEvent(ev) {
   if (ev.type === "input_audio_buffer.speech_started") {
     lastSpeechStartedAt = performance.now();
+    // She's speaking (again) — whatever reply was brewing, hold it. Her new
+    // audio joins the same turn once she's really done.
+    clearTimeout(patienceTimer);
+    patienceTimer = null;
+    responseQueued = false;
     setStatus("poslouchám tě");
   } else if (ev.type === "input_audio_buffer.speech_stopped") {
-    setStatus("přemýšlím");
+    // Don't answer yet — give her the patience window to finish the thought.
+    schedulePatienceResponse();
+    setStatus("poslouchám tě");
   } else if (ev.type === "response.created") {
     // OpenAI started generating — earliest signal that Amálka is "thinking".
+    responseActive = true;
     setStatus("přemýšlím");
   } else if (
     ev.type === "response.audio.delta" ||
@@ -622,6 +679,7 @@ function handleEvent(ev) {
     ev.type === "response.done" ||
     ev.type === "response.completed"
   ) {
+    responseActive = false;
     const status = ev.response?.status ?? "completed";
     const outputs = ev.response?.output ?? [];
     if (status === "completed") {
@@ -645,6 +703,9 @@ function handleEvent(ev) {
       accumulateUsage(usage);
       reportUsage(usage);
     }
+    // A reply request landed while this response was still active (e.g. she
+    // finished a sentence while Amálka was being interrupted) — answer now.
+    if (responseQueued && !isPaused) requestResponse();
   } else if (
     ev.type === "response.output_audio.done" ||
     ev.type === "response.audio.done"
@@ -662,6 +723,11 @@ async function togglePause() {
   isPaused = !isPaused;
   for (const t of mediaStream.getAudioTracks()) t.enabled = !isPaused;
   if (isPaused) {
+    // No reply should fire out of a pause — drop the patience timer and any
+    // queued response along with the active one.
+    clearTimeout(patienceTimer);
+    patienceTimer = null;
+    responseQueued = false;
     // Stop Amálka mid-sentence: cancel any active response and drop her
     // queued audio. Without this, pause just mutes the kid — Amálka keeps
     // talking, which is exactly NOT what "pause" means to a 6yo.

@@ -1,6 +1,10 @@
 import { Hono } from "hono";
 import { issueClientSecret } from "../openai.ts";
-import { REALTIME_MODEL } from "../persona.ts";
+import {
+  REALTIME_MODEL,
+  responsePatienceMs,
+  vadCreatesResponse,
+} from "../persona.ts";
 import {
   rateLimit,
   dailyBudgetCheck,
@@ -72,6 +76,11 @@ r.post("/api/realtime/session", async (c) => {
       maxImages: MAX_IMAGES_PER_SESSION,
       maxSessionSeconds,
       maxSessionMinutes: Math.max(1, Math.floor(maxSessionSeconds / 60)),
+      // Turn-taking contract: when serverCreatesResponse is false the client
+      // owns response.create and waits patienceMs after speech_stopped, so a
+      // mid-sentence thinking pause doesn't trigger an answer.
+      patienceMs: responsePatienceMs(),
+      serverCreatesResponse: vadCreatesResponse(),
     });
   } catch (e) {
     log.error("issueClientSecret failed", String(e));

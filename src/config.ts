@@ -76,7 +76,7 @@ export function inspectConfig(
     });
   }
 
-  const voice = (env.AMALKA_VOICE ?? "cedar").trim();
+  const voice = (env.AMALKA_VOICE ?? "marin").trim();
   if (!KNOWN_VOICES.includes(voice as (typeof KNOWN_VOICES)[number])) {
     problems.push({
       level: "warn",
